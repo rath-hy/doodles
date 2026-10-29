@@ -15,3 +15,7 @@ Whenever a doodle can run as a static page, publish it to the personal site at `
 2. Every doodle page is full screen with no site header. Add `<script src="../menu.js"></script>` before `</body>` to get the floating ☰ menu back to the rest of the site.
 3. Add an entry to the `doodles` array in `puthyrathy-site/doodles/index.html`: `{ slug, title, date, blurb }`.
 4. Don't commit or push the site repo unless asked.
+
+## Session log
+
+Friends follow progress and consistency on puthyrathy.com/doodles. At the end of every session, add an entry to the `log` array in `puthyrathy-site/doodles/index.html`: `{ date: 'YYYY-MM-DD', text }`, where `text` is one plain paragraph in Rath's voice (first person, minimal formatting) summarizing what happened. Each logged date lights up a square in the page's calendar grid.
