@@ -22,6 +22,7 @@ Open the notebook in Google Colab (File → Upload notebook) with a GPU runtime.
 
 - **It works.** It ran on Colab on 2026-10-30. Two examples are in this folder: `sunset_to_mountain.png` and `angkorwat_to_jamesbond.png`. With projection, the model relights the scene to fit the source's palette. Without it, snapping afterward gives banded, posterized results.
 - **Write-up:** the end of the notebook has a plain-language summary, the method, limitations, future directions and a bibliography.
+- **Verification:** the notebook's "Verify" cell and [`verify_histogram.py`](verify_histogram.py) count every exact RGB color in the source and in a result, and list any color whose count differs.
 - **Known artifact:** a faint grid texture from the repeated VAE decode/encode round trips.
 
 It needs a GPU, so it can't run as a static page on puthyrathy.com/doodles. A gallery of results could go there later.
