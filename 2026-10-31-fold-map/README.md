@@ -38,6 +38,23 @@ The traditional crane (Flat-Folder example `004`; 72 faces and 5 valid folded st
 
 I folded a crane from notebook paper following [Rachel Katz's diagrams](https://origamiwithrachelkatz.oriland.com/folding/crane.php), stopping before opening the wings so it stayed flat. I shaded everything visible on one face with straight pencil lines and on the other with circles, then unfolded it. The shading matches the predicted regions in `visibility_sheet.png` (side 2). Photos are in [`crane_pics/`](crane_pics/), with location metadata removed.
 
+## Which way is up
+
+[`directions.py`](directions.py) draws a letter F on each visible region of side 2, oriented the way a picture must be printed there to appear upright on the folded crane (`directions.png`). For the crane, all 18 visible regions only need rotating (by multiples of 22.5°), never mirroring, since you see the same side of the paper you print on.
+
+## Decal: print a picture that appears on the folded crane
+
+```
+python decal.py                                   # test pictures: a big F and B
+python decal.py --front cat.jpg --back dog.jpg    # your own pictures
+```
+
+Each picture is center-cropped to the folded silhouette (about 1.3:1, landscape, for the crane) and mapped onto the sheet point by point: every visible point gets the color of the picture at the place it lands when folded. Only visible regions are printed, plus a 1% bleed (`--bleed`) so imperfect folds don't show white slivers. Tiny letters A–D in hidden areas mark the corners, and the preview shows where each lands (crane: A tail, C head, B and D wings). Writes `decal_side2.png` (8 × 8 inches at 300 dpi; also `decal_side1.png` for models that show both sides) and `decal_preview.png` (the model simulated from the printed sheets).
+
+## Notebook
+
+[`fold_map.ipynb`](fold_map.ipynb) walks through the whole workflow for any flat-foldable model from Flat-Folder: where each face lands, the layer stacking, the visibility map, which way is up, and the decal, with uploads for your own model and pictures on Colab. It imports the code from this folder (cloning the repo on Colab), and ends with a list of building blocks for further experiments.
+
 ## Next
 
 - Splice an image onto the visible regions using `fold_map.npz`.

@@ -177,30 +177,27 @@ def draw_creases(ax, model, swap=False):
             ax.plot(*model.sheet[[a, b]].T, color=colors[kind], lw=0.6 if kind != "B" else 1.2)
 
 
-def main(cp_path, state_path):
-    model = FoldedModel(cp_path, state_path)
-    side1, side2, (slo, shi), unk_sheet = model.sheet_visibility(800)
-    views, (flo, fhi), unk_view = model.views(900)
+PALETTE = np.array([[0.82, 0.82, 0.82], [0.83, 0.69, 0.48], [0.36, 0.55, 0.80]])   # hidden, front, back
 
-    print(f"faces: {len(model.faces)}, flipped: {int((model.normal < 0).sum())}")
-    for name, s in [("side 1", side1), ("side 2", side2)]:
-        print(f"{name}: {np.mean(s == 1):6.1%} visible from the front, {np.mean(s == 2):6.1%} from the back, "
-              f"{np.mean(s == 0):6.1%} hidden")
-    print(f"sample points where touching faces have no recorded order: {unk_sheet + unk_view} "
-          "(expected only on crease lines, where faces meet edge to edge)")
 
-    palette = np.array([[0.82, 0.82, 0.82], [0.83, 0.69, 0.48], [0.36, 0.55, 0.80]])
+def plot_visibility(model, side1, side2, sheet_bounds):
+    # Both sides of the sheet, each as seen from that side, colored by which view shows it.
+    slo, shi = sheet_bounds
     fig, axes = plt.subplots(1, 2, figsize=(12, 6.4))
     for ax, s, title, turned in [(axes[0], side1, "side 1 (as shown in Flat-Folder)", False),
                                  (axes[1], side2, "side 2 (sheet turned over left to right)", True)]:
-        ax.imshow(palette[s], extent=extent(slo, shi, turned), interpolation="nearest")
+        ax.imshow(PALETTE[s], extent=extent(slo, shi, turned), interpolation="nearest")
         draw_creases(ax, model, swap=not turned)
         ax.set_title(title); ax.set_aspect("equal"); ax.axis("off")
-    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in palette]
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in PALETTE]
     fig.legend(handles, ["hidden", "visible from the front", "visible from the back"], loc="lower center", ncol=3)
-    plt.tight_layout(rect=(0, 0.06, 1, 1)); plt.savefig("visibility_sheet.png", dpi=150); plt.close()
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
+    return fig
 
+
+def plot_folded_views(model, views, folded_bounds, sheet_bounds):
     # The folded model from both sides, textured by where each visible point sits on the sheet.
+    (flo, fhi), (slo, shi) = folded_bounds, sheet_bounds
     fig, axes = plt.subplots(1, 3, figsize=(16, 5.2), gridspec_kw={"width_ratios": [1, 1.4, 1.4]})
     s = np.stack(np.meshgrid(np.linspace(slo[0], shi[0], 400), np.linspace(slo[1], shi[1], 400)), -1)
     axes[0].imshow(texture(s, np.ones(s.shape[:2], np.uint8), slo, shi), extent=extent(slo, shi, False))
@@ -212,11 +209,32 @@ def main(cp_path, state_path):
         ax.set_title(f"folded, {view}" + (" (Flip)" if view == "back" else ""))
     for ax in axes:
         ax.set_aspect("equal"); ax.axis("off")
-    plt.tight_layout(); plt.savefig("folded_views.png", dpi=150); plt.close()
+    fig.tight_layout()
+    return fig
+
+
+def summarize(model, side1, side2, unknown):
+    print(f"faces: {len(model.faces)}, flipped: {int((model.normal < 0).sum())}")
+    for name, s in [("side 1", side1), ("side 2", side2)]:
+        print(f"{name}: {np.mean(s == 1):6.1%} visible from the front, {np.mean(s == 2):6.1%} from the back, "
+              f"{np.mean(s == 0):6.1%} hidden")
+    print(f"sample points where touching faces have no recorded order: {unknown} "
+          "(expected only on crease lines, where faces meet edge to edge)")
+
+
+def main(cp_path, state_path):
+    model = FoldedModel(cp_path, state_path)
+    side1, side2, sheet_bounds, unk_sheet = model.sheet_visibility(800)
+    views, folded_bounds, unk_view = model.views(900)
+    summarize(model, side1, side2, unk_sheet + unk_view)
+
+    plot_visibility(model, side1, side2, sheet_bounds).savefig("visibility_sheet.png", dpi=150)
+    plot_folded_views(model, views, folded_bounds, sheet_bounds).savefig("folded_views.png", dpi=150)
+    plt.close("all")
 
     np.savez_compressed("fold_map.npz", **{f"{v}_{k}": arr for v, (xy, side, face) in views.items()
                                            for k, arr in [("sheet_xy", xy), ("side", side), ("face", face)]},
-                        folded_bounds=np.array([flo, fhi]), sheet_bounds=np.array([slo, shi]),
+                        folded_bounds=np.array(folded_bounds), sheet_bounds=np.array(sheet_bounds),
                         side1=side1, side2=side2)
     print("wrote visibility_sheet.png, folded_views.png, fold_map.npz")
 
