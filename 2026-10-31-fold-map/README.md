@@ -62,7 +62,11 @@ Each picture is center-cropped to the folded silhouette (about 1.3:1, landscape,
 - **Composite (CPU):** the flat picture in hidden areas and the folded pictures in visible ones. The baseline; the flat picture ends up shattered.
 - **Generated (GPU):** Visual Anagrams (Geng, Park, Owens, CVPR 2024) adapted to folding, using DeepFloyd IF. At every denoising step the model sees the sheet flat and folded, each with its own prompt, and the predictions are mapped back and blended per pixel. The folded views are drawn on a plain backdrop held at the current noise level.
 
-The geometry and the sampler's bookkeeping were tested on CPU with a stand-in model; the DeepFloyd run itself has not been tried yet.
+The geometry and the sampler's bookkeeping were tested on CPU with a stand-in model, and the notebook runs on a free Colab GPU.
+
+### Trial 1
+
+A city street at night (oil painting) flat, a red fox on the front and a white owl on the back ([`prints/`](prints/): the generated sheet, the A4 print file with two copies, and the virtual fold). Folded on the computer, both animals appear. Printed on a home printer and folded by hand ([`crane_pics/trial_1/`](crane_pics/trial_1/), including a timelapse), the fox comes through but the owl is barely visible: the print is darker and muddier than the screen, white crease lines cut across the picture, and the folds aren't exact. Bolder, simpler, higher-contrast pictures should survive better.
 
 ## Next
 
