@@ -234,17 +234,24 @@ def render(text, models, views, places, res):
     return sheet[:, ::-1].copy(), hi                                         # as seen printed side up
 
 
-def least_overlap_sides(models, res=160):
-    """Which side of each stage to show, so the stages share as few sheet pixels as possible.
-    Each stage can be held either way round, so this is free to choose."""
+def shared_paper(models, sides, res=160):
+    """For each stage, the share of its visible paper that another stage also shows. Those
+    pixels are painted once for several pictures, so they must suit all of them."""
     seen = []
-    for m in models:
+    for m, side in zip(models, sides):
         _, side2, _, _ = m.sheet_visibility(res)
-        seen.append({"front": side2 == 1, "back": side2 == 2})
-    best = min(itertools.product(["front", "back"], repeat=len(models)),
-               key=lambda sides: sum((seen[s][sides[s]] & seen[t][sides[t]]).sum()
-                                     for s, t in itertools.combinations(range(len(models)), 2)))
-    return list(best)
+        seen.append(side2 == (1 if side == "front" else 2))
+    return [float((s & np.logical_or.reduce([t for j, t in enumerate(seen) if j != i] or [np.zeros_like(s)])).sum()
+                  / s.sum()) for i, s in enumerate(seen)]
+
+
+def least_shared_sides(models, res=160):
+    """Which side of each stage to show. Each stage can be held either way round; this picks the
+    sides where the stage that shares the most of its paper shares as little as possible (ties go
+    to the least sharing in total). Consecutive stages always share a lot, because folding keeps
+    much of the outside on the outside."""
+    options = list(itertools.product(["front", "back"], repeat=len(models)))
+    return list(min(options, key=lambda sides: (max(sh := shared_paper(models, sides, res)), sum(sh))))
 
 
 def stage_views(models, sides, res, seed=0):

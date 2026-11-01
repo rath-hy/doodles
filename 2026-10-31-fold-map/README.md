@@ -70,11 +70,12 @@ A city street at night (oil painting) flat, a red fox on the front and a white o
 
 ## Folding story: a picture at every stage
 
-[`story.ipynb`](story.ipynb) and [`story.py`](story.py) make one sheet that shows a different picture flat, as a preliminary base, as a bird base, and as the finished crane (for example a nest, an egg, a chick, a crane).
+[`story.ipynb`](story.ipynb) and [`story.py`](story.py) make one sheet that shows a different picture flat, as a preliminary base, as a bird base, and as the finished crane (for example a field of leaves, a bud, a half-open flower, a flower in full bloom).
 
 - **The stages.** [`make_stages.py`](make_stages.py) writes crease patterns for the two bases on the crane's sheet, with creases that match the crane's, and solves them with Flat-Folder's own solver, run outside the browser by [`ff_solve.mjs`](ff_solve.mjs). That script reproduces the crane state exported from the website exactly. The results are in `stages/`. Both bases leave the BD diagonal unfolded; folding it doubles each base over.
 - **Digits (CPU).** `python story.py` places 0, 1, 2, 3 so they compete for as few pixels as possible. It shows the core difficulty: each face of the preliminary base is an uncut quarter of the sheet, so its picture is readable flat. The bird base shows 2 pieces of paper, the crane about 10.
-- **Generated (GPU).** The DeepFloyd sampler in `illusion.py` now takes any list of folded views, from any models. The notebook runs it with the flat sheet plus the three stages, each with its own prompt, so later pictures can hide in the texture of earlier ones. Tested on CPU with a stand-in model; not yet run on a GPU.
+- **Generated (GPU).** The DeepFloyd sampler in `illusion.py` now takes any list of folded views, from any models. The notebook runs it with the flat sheet plus the three stages, each with its own prompt, so later pictures can hide in the texture of earlier ones.
+- **First GPU run.** With the digits 1, 2, 3 (pencil drawings on a "geometric mess"), the 1 vanished into the flat scene, and the 2 and 3 blurred into each other. The reason: consecutive stages show a lot of the same paper, because folding keeps much of the outside on the outside. With the sides used, 53% of the crane's visible paper also showed on the bird base. The notebook now picks sides by how much of each stage's own paper is shared (`least_shared_sides`; for the crane, the finished crane shares none and the two bases share 41% and 50%), and the default story is a transformation whose stages can share strokes: a bud opening into a flower.
 
 ## Next
 
