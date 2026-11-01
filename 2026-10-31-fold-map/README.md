@@ -55,6 +55,15 @@ Each picture is center-cropped to the folded silhouette (about 1.3:1, landscape,
 
 [`fold_map.ipynb`](fold_map.ipynb) walks through the whole workflow for any flat-foldable model from Flat-Folder: where each face lands, the layer stacking, the visibility map, which way is up, and the decal, with uploads for your own model and pictures on Colab. It imports the code from this folder (cloning the repo on Colab), and ends with a list of building blocks for further experiments.
 
+## Illusions: one picture flat, another folded
+
+[`illusions.ipynb`](illusions.ipynb) and [`illusion.py`](illusion.py) make a sheet that shows one picture when flat and other pictures on the folded crane's front and back. `FoldViews` turns the fold map into pixel maps between the printed side and the folded views (98–99% one-to-one at 256 × 256, since folding is rigid). On top of that:
+
+- **Composite (CPU):** the flat picture in hidden areas and the folded pictures in visible ones. The baseline; the flat picture ends up shattered.
+- **Generated (GPU):** Visual Anagrams (Geng, Park, Owens, CVPR 2024) adapted to folding, using DeepFloyd IF. At every denoising step the model sees the sheet flat and folded, each with its own prompt, and the predictions are mapped back and blended per pixel. The folded views are drawn on a plain backdrop held at the current noise level.
+
+The geometry and the sampler's bookkeeping were tested on CPU with a stand-in model; the DeepFloyd run itself has not been tried yet.
+
 ## Next
 
 - Splice an image onto the visible regions using `fold_map.npz`.
