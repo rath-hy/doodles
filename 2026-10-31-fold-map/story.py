@@ -1,7 +1,8 @@
 """Folding story: a different picture at each stage of folding a crane.
 
-    python story.py                  # 0 flat, 1 preliminary base, 2 bird base, 3 crane
-    python story.py --text ABCD      # any four characters
+    python story.py                  # 0 flat, 1 bird base, 2 crane
+    python story.py --text ABC       # any three characters
+    python story.py --stages "preliminary base" "bird base" crane    # 0, 1, 2, 3
 
 The pictures are single characters, so no generative model is needed. Each later stage's
 character is sized, placed and stretched to fit inside what that stage shows, choosing the
@@ -36,6 +37,21 @@ STAGES = [
     ("bird base", "stages/bird_cp.fold", "stages/bird_state.fold", (B, A)),
     ("crane", "004_traditional_Crane_cp.fold", "004_traditional_Crane_state.fold", None),
 ]
+# The preliminary base is left out by default: each of its faces is one uncut quarter of the sheet,
+# so its picture sits on the flat sheet intact. The bird base and crane cut their paper into 2 and
+# about 10 pieces, and with the sides least_shared_sides picks, they share no paper.
+DEFAULT_STAGES = ["bird base", "crane"]
+
+
+def load_stages(names=DEFAULT_STAGES):
+    """The stages to fold through, in folding order, picked by name (None: all of STAGES).
+    Returns (stages, models): the STAGES entries and their FoldedModels."""
+    stages = [st for st in STAGES if names is None or st[0] in names]
+    if names is not None and len(stages) != len(names):
+        raise ValueError(f"unknown stage in {names}; choose from {[st[0] for st in STAGES]}")
+    return stages, [FoldedModel(os.path.join(HERE, cp), os.path.join(HERE, st)) for _, cp, st, _ in stages]
+
+
 COLORS = [(20, 20, 20), (214, 40, 40), (29, 78, 216), (22, 128, 61)]   # one per character, in story order
 
 
@@ -179,7 +195,7 @@ def intact(ink, sv):
     return counts.max() / counts.sum() if len(counts) else 1.0
 
 
-def plan(text, models, res=160, canvas=160, weight=4.0, scatter=2.0):
+def plan(text, stages, models, res=160, canvas=160, weight=4.0, scatter=2.0):
     """Choose a side for each stage and a placement for every character.
 
     Returns (views, placements, report): the StageView for each folded stage, (cx, cy, w, h)
@@ -190,7 +206,7 @@ def plan(text, models, res=160, canvas=160, weight=4.0, scatter=2.0):
     best = None
     for sides in itertools.product(["front", "back"], repeat=len(models)):
         views = [StageView(name, m, side, upright_turn(m, side, up), res)
-                 for (name, _, _, up), m, side in zip(STAGES, models, sides)]
+                 for (name, _, _, up), m, side in zip(stages, models, sides)]
         glyphs = [glyph(ch) for ch in text[1:]]
         cands = [fit_candidates(g, v.outline(canvas)) for g, v in zip(glyphs, views)]
         inks = [[ink_on_sheet(g, p, v) for _, p in c] for g, v, c in zip(glyphs, views, cands)]
@@ -254,14 +270,14 @@ def least_shared_sides(models, res=160):
     return list(min(options, key=lambda sides: (max(sh := shared_paper(models, sides, res)), sum(sh))))
 
 
-def stage_views(models, sides, res, seed=0):
+def stage_views(stages, models, sides, res, seed=0):
     """FoldViews for each stage at `res` pixels, held upright, as (FoldViews, side) pairs for
     illusion.generate."""
     return [(FoldViews(m, res, seed, turn={side: upright_turn(m, side, up)}), side)
-            for m, side, (_, _, _, up) in zip(models, sides, STAGES)]
+            for m, side, (_, _, _, up) in zip(models, sides, stages)]
 
 
-def plot_story(sheet, models, sides, titles, res=450):
+def plot_story(sheet, stages, models, sides, titles, res=450):
     """The printed side flat, then each stage folded from it. The folding uses decal.simulate,
     independently of the pixel maps used to make the sheet, so this doubles as a check."""
     from decal import simulate
@@ -271,7 +287,7 @@ def plot_story(sheet, models, sides, titles, res=450):
     fig, axes = plt.subplots(1, len(models) + 1, figsize=(4.2 * (len(models) + 1), 4.6))
     axes[0].imshow(big)
     axes[0].set_title(titles[0])
-    for ax, m, side, (_, _, _, up), title in zip(axes[1:], models, sides, STAGES, titles[1:]):
+    for ax, m, side, (_, _, _, up), title in zip(axes[1:], models, sides, stages, titles[1:]):
         sim, _ = simulate(m, {2: dict(color=raw, printed=np.ones(raw.shape[:2], bool))}, res=res)
         img = Image.fromarray((sim[side] * 255).round().astype(np.uint8))
         img = img.rotate(-upright_turn(m, side, up), Image.BICUBIC, expand=True, fillcolor=(217, 217, 217))
@@ -285,15 +301,19 @@ def plot_story(sheet, models, sides, titles, res=450):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--text", default="0123", help="one character per stage: flat, then each folded stage")
+    ap.add_argument("--stages", nargs="+", default=DEFAULT_STAGES, metavar="STAGE",
+                    help="stages to fold through, from: " + ", ".join(f'"{st[0]}"' for st in STAGES)
+                    + " (default: " + ", ".join(f'"{n}"' for n in DEFAULT_STAGES) + ")")
+    ap.add_argument("--text", default=None, help="one character per stage: flat, then each folded stage (default 0, 1, 2, ...)")
     ap.add_argument("--scatter", type=float, default=2.0,
                     help="how much to prefer characters split across pieces of paper, so they don't read when flat")
     ap.add_argument("--res", type=int, default=1800, help="printed sheet size in pixels (1800 = 15 cm at 300 dpi)")
     args = ap.parse_args()
-    if len(args.text) != len(STAGES) + 1:
-        ap.error(f"--text needs {len(STAGES) + 1} characters")
-    models = [FoldedModel(os.path.join(HERE, cp), os.path.join(HERE, st)) for _, cp, st, _ in STAGES]
-    views, places, report = plan(args.text, models, scatter=args.scatter)
+    stages, models = load_stages(args.stages)
+    args.text = args.text or "0123456789"[:len(stages) + 1]
+    if len(args.text) != len(stages) + 1:
+        ap.error(f"--text needs {len(stages) + 1} characters")
+    views, places, report = plan(args.text, stages, models, scatter=args.scatter)
     for v in views:
         print(f"{v.name}: {v.view} side, turned {v.turn:.0f} degrees")
     for k, c in report.items():
@@ -301,7 +321,7 @@ def main():
     printed, _ = render(args.text, models, views, places, args.res)
     Image.fromarray(printed).save("story_sheet.png", dpi=(args.res / 150 * 25.4,) * 2)
     titles = [f"flat: {args.text[0]}"] + [f"{v.name} ({v.view}): {ch}" for v, ch in zip(views, args.text[1:])]
-    plot_story(printed.astype(float) / 255, models, [v.view for v in views], titles).savefig("story_preview.png", dpi=80)
+    plot_story(printed.astype(float) / 255, stages, models, [v.view for v in views], titles).savefig("story_preview.png", dpi=80)
     print("wrote story_sheet.png and story_preview.png")
 
 
