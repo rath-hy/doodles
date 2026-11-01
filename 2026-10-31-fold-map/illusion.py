@@ -40,7 +40,8 @@ class FoldViews:
       visible[v]  (R, R) bool on the sheet: pixels shown in this view
     """
 
-    def __init__(self, model, res, seed=0):
+    def __init__(self, model, res, seed=0, turn=None):
+        # turn: {view: degrees} to rotate a view's canvas clockwise, e.g. to hold a base point up.
         side1, side2, _, _ = model.sheet_visibility(res)       # each as seen from its own side
         if side1.any() and side2.any():
             raise NotImplementedError("this model shows both sides of the paper; only one-sided models are supported")
@@ -59,9 +60,10 @@ class FoldViews:
         for view in ("front", "back"):
             # Folded-plane position of every canvas pixel center. The back view is mirrored.
             c = (np.arange(res) - res / 2 + 0.5) * self.pixel
-            xs = center[0] + (-c if view == "back" else c)
-            ys = center[1] + c
-            Q = np.stack(np.meshgrid(xs, ys), -1).reshape(-1, 2)
+            u, v = (a.ravel() for a in np.meshgrid(c, c))
+            a = np.radians((turn or {}).get(view, 0))
+            u, v = u * np.cos(a) + v * np.sin(a), -u * np.sin(a) + v * np.cos(a)
+            Q = np.stack([center[0] + (-u if view == "back" else u), center[1] + v], -1)
             top, bottom, _ = model.stack_ends(model.cover(Q))
             face = bottom if view == "front" else top
             paper = face >= 0
@@ -211,15 +213,18 @@ def plot_result(views, sheet, title="", sim_res=500):
 # DeepFloyd IF sampler (needs PyTorch and a GPU)
 
 
+def _entries(views):
+    # Folded views as a list of (FoldViews, "front" or "back"); a single FoldViews means both its sides.
+    return [(views, "front"), (views, "back")] if isinstance(views, FoldViews) else list(views)
+
+
 def _torch_maps(views, device):
     import torch
-    m = {}
-    for v in ("front", "back"):
-        m[v] = dict(source=torch.as_tensor(views.source[v].ravel(), device=device),
-                    paper=torch.as_tensor(views.paper[v], device=device),
-                    sheet_px=torch.as_tensor(views.pairs[v][0], device=device),
-                    canvas_px=torch.as_tensor(views.pairs[v][1], device=device))
-    return m
+    return [dict(source=torch.as_tensor(fv.source[v].ravel(), device=device),
+                 paper=torch.as_tensor(fv.paper[v], device=device),
+                 sheet_px=torch.as_tensor(fv.pairs[v][0], device=device),
+                 canvas_px=torch.as_tensor(fv.pairs[v][1], device=device))
+            for fv, v in _entries(views)]
 
 
 def _gather(x, m, background):
@@ -230,20 +235,21 @@ def _gather(x, m, background):
 
 
 def _combine(preds, maps, fold_weight, R):
-    # preds: {view: (C, R, R) prediction in that view's space}. Map folded predictions back to the
-    # sheet and blend per pixel: hidden pixels follow the flat view alone; visible
-    # pixels take fold_weight from their folded view and the rest from the flat view.
-    flat = preds["flat"]
+    # preds: [flat prediction, then one per folded view], each (C, R, R) in its view's space. Map
+    # the folded predictions back to the sheet and blend per pixel: hidden pixels follow the flat
+    # view alone; a pixel seen in folded views gets weight fold_weight from each of them and
+    # 1 - fold_weight from the flat view, normalized.
+    flat = preds[0]
     C = flat.shape[0]
-    total = flat.reshape(C, -1).clone()
-    for v in ("front", "back"):
-        m = maps[v]
-        total[:, m["sheet_px"]] = (1 - fold_weight) * total[:, m["sheet_px"]] \
-            + fold_weight * preds[v].reshape(C, -1)[:, m["canvas_px"]]
-    return total.reshape(C, R, R)
+    total = (1 - fold_weight) * flat.reshape(C, -1).float()
+    weight = total.new_full((R * R,), 1 - fold_weight)
+    for pred, m in zip(preds[1:], maps):
+        total.index_add_(1, m["sheet_px"], fold_weight * pred.reshape(C, -1)[:, m["canvas_px"]].float())
+        weight.index_add_(0, m["sheet_px"], weight.new_full((len(m["sheet_px"]),), fold_weight))
+    return (total / weight).to(flat.dtype).reshape(C, R, R)
 
 
-def _step(unet, x, cond, t, embeds, maps, prompts_views, guidance, fold_weight, bg_t, class_labels=None):
+def _step(unet, x, cond, t, embeds, maps, guidance, fold_weight, bg_t, class_labels=None):
     # One denoising step's combined prediction. x: (1, 3, R, R) sheet at timestep t; cond: optional
     # (1, 3, R, R) upscaled stage-1 sheet (stage 2), already noised; bg_t: (1, 3, R, R) background
     # at timestep t (and bg_cond for the conditioning, packed in a tuple for stage 2).
@@ -251,10 +257,10 @@ def _step(unet, x, cond, t, embeds, maps, prompts_views, guidance, fold_weight, 
     R = x.shape[-1]
     bg_x, bg_c = bg_t
     inputs = []
-    for v in prompts_views:
-        xv = x if v == "flat" else _gather(x, maps[v], bg_x)
+    for m in [None] + maps:                                       # the flat view, then each folded view
+        xv = x if m is None else _gather(x, m, bg_x)
         if cond is not None:
-            cv = cond if v == "flat" else _gather(cond, maps[v], bg_c)
+            cv = cond if m is None else _gather(cond, m, bg_c)
             xv = torch.cat([xv, cv], 1)
         inputs.append(xv)
     n = len(inputs)
@@ -265,7 +271,7 @@ def _step(unet, x, cond, t, embeds, maps, prompts_views, guidance, fold_weight, 
     uncond, text = out.chunk(2)
     noise = uncond[:, :3] + guidance * (text[:, :3] - uncond[:, :3])
     pred = torch.cat([noise, text[:, 3:]], 1)                     # guided noise + predicted variance
-    return _combine({v: pred[i] for i, v in enumerate(prompts_views)}, maps, fold_weight, R)[None]
+    return _combine(list(pred), maps, fold_weight, R)[None]
 
 
 def generate(stage_1, stage_2, views64, views256, embeds, guidance=(7.0, 4.0), steps=(50, 40),
@@ -273,17 +279,18 @@ def generate(stage_1, stage_2, views64, views256, embeds, guidance=(7.0, 4.0), s
     """Sample the printed side of a fold illusion with DeepFloyd IF.
 
     stage_1, stage_2: IFPipeline and IFSuperResolutionPipeline. views64, views256: FoldViews at
-    64 and 256 pixels. embeds: (negative, positive) prompt embeddings for the flat, front and back
-    views, each of shape (3, tokens, dim). fold_weight: how much visible pixels follow the folded
-    pictures (vs. the flat one). background: brightness of the plain backdrop the folded views are
-    drawn on, in [0, 1]. Returns (stage-1 sheet, final sheet) as (R, R, 3) arrays in [0, 1].
+    64 and 256 pixels (for the front and back of one model), or matching lists of
+    (FoldViews, "front" or "back") for any folded views, e.g. several stages of folding.
+    embeds: (negative, positive) prompt embeddings for the flat view and then each folded view
+    in order, each of shape (1 + number of folded views, tokens, dim). fold_weight: how much
+    visible pixels follow the folded pictures (vs. the flat one). background: brightness of the
+    plain backdrop the folded views are drawn on, in [0, 1]. Returns (stage-1 sheet, final sheet) as (R, R, 3) arrays in [0, 1].
     """
     import torch
     import torch.nn.functional as F
     device = stage_1._execution_device
     dtype = stage_1.unet.dtype
     gen = torch.Generator(device).manual_seed(seed)
-    order = ("flat", "front", "back")
     neg, pos = (e.to(device, dtype) for e in embeds)
 
     def run(pipe, views, R, n_steps, scale, cond=None, class_labels=None):
@@ -299,7 +306,7 @@ def generate(stage_1, stage_2, views64, views256, embeds, guidance=(7.0, 4.0), s
             # The backdrop is known, so it's re-noised to the current timestep, as in inpainting.
             bg_t = pipe.scheduler.add_noise(bg, bg_noise, t.reshape(1))
             pred = _step(pipe.unet, pipe.scheduler.scale_model_input(x, t), cond, t, (neg, pos), maps,
-                         order, scale, fold_weight, (bg_t, bg_c), class_labels)
+                         scale, fold_weight, (bg_t, bg_c), class_labels)
             x = pipe.scheduler.step(pred, t, x, generator=gen, return_dict=False)[0]
             if progress:
                 progress(i, len(pipe.scheduler.timesteps))

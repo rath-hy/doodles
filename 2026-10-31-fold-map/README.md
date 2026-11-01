@@ -68,6 +68,14 @@ The geometry and the sampler's bookkeeping were tested on CPU with a stand-in mo
 
 A city street at night (oil painting) flat, a red fox on the front and a white owl on the back ([`prints/`](prints/): the generated sheet, the A4 print file with two copies, and the virtual fold). Folded on the computer, both animals appear. Printed on a home printer and folded by hand ([`crane_pics/trial_1/`](crane_pics/trial_1/), including a timelapse), the fox comes through but the owl is barely visible: the print is darker and muddier than the screen, white crease lines cut across the picture, and the folds aren't exact. Bolder, simpler, higher-contrast pictures should survive better.
 
+## Folding story: a picture at every stage
+
+[`story.ipynb`](story.ipynb) and [`story.py`](story.py) make one sheet that shows a different picture flat, as a preliminary base, as a bird base, and as the finished crane (for example a nest, an egg, a chick, a crane).
+
+- **The stages.** [`make_stages.py`](make_stages.py) writes crease patterns for the two bases on the crane's sheet, with creases that match the crane's, and solves them with Flat-Folder's own solver, run outside the browser by [`ff_solve.mjs`](ff_solve.mjs). That script reproduces the crane state exported from the website exactly. The results are in `stages/`. Both bases leave the BD diagonal unfolded; folding it doubles each base over.
+- **Digits (CPU).** `python story.py` places 0, 1, 2, 3 so they compete for as few pixels as possible. It shows the core difficulty: each face of the preliminary base is an uncut quarter of the sheet, so its picture is readable flat. The bird base shows 2 pieces of paper, the crane about 10.
+- **Generated (GPU).** The DeepFloyd sampler in `illusion.py` now takes any list of folded views, from any models. The notebook runs it with the flat sheet plus the three stages, each with its own prompt, so later pictures can hide in the texture of earlier ones. Tested on CPU with a stand-in model; not yet run on a GPU.
+
 ## Next
 
 - Splice an image onto the visible regions using `fold_map.npz`.
