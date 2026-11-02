@@ -79,6 +79,17 @@ A city street at night (oil painting) flat, a red fox on the front and a white o
 - **Second GPU run.** The flowers came out as roughly the same pink flower at every stage, so the story had no distinct beats; the flat sheet showed the preliminary base's flower in its corner; and the bird base drew a bud on a stem whatever it was asked for, because that fits its tall diamond. Lessons: give each stage a distinct subject and color, and fit each subject to its outline.
 - **Three parts by default.** The preliminary base is now left out: its picture can't hide (one uncut piece), and it shared half its paper with the bird base. Without it, the bird base and crane share no paper, and the flat picture has 67% of the sheet to itself (53% before). The default story is leaves, a hanging chrysalis (the bird base's tall diamond), and a monarch butterfly (the crane's wings). What makes a stage good is scrambling the paper, not being small.
 
+### More pixels for the crane
+
+At stage 1 (64 × 64), the crane shows only 489 pixels of the sheet (its body is about 16 × 22), so its picture is composed in a tiny patch, and printing bigger doesn't change that. [`story_more_pixels.ipynb`](story_more_pixels.ipynb) tests two fixes on a new story (an aerial view of a home planet, a rocket on the bird base, a ringed planet on the crane):
+
+- **Stage 2 redraws the folded pictures.** `generate` now takes a stage-2 noise level per view, so the folded views can be redrawn at 256 pixels while the flat view keeps stage 1's composition.
+- **Stage 1 at 128.** `generate` takes stage-1 views at any resolution. The crane gets 1,925 pixels instead of 489, but the model was trained at 64.
+
+### Other models
+
+To compare models, I measured Flat-Folder examples by how much paper each finished model shows per view and how scrambled it is. The crane shows 12% of the sheet per view, in 4 sizable pieces, the largest a quarter of the view. Yakko shows 17% in 8, the largest an eighth, and simple models like the pinwheel show 30–40% but in a few big pieces, which would be readable flat. Yakko can't be used for the folding story yet: keeping each crease's mountain or valley, no subset of Flat-Folder's Yakko creases folds flat except the whole model (and the sheet with its corner tips folded in), so its intermediate stages would have to be built from its actual folding sequence.
+
 ## Next
 
 - Splice an image onto the visible regions using `fold_map.npz`.

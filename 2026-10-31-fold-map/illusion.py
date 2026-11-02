@@ -251,22 +251,23 @@ def _combine(preds, maps, fold_weight, R):
 
 def _step(unet, x, cond, t, embeds, maps, guidance, fold_weight, bg_t, class_labels=None):
     # One denoising step's combined prediction. x: (1, 3, R, R) sheet at timestep t; cond: optional
-    # (1, 3, R, R) upscaled stage-1 sheet (stage 2), already noised; bg_t: (1, 3, R, R) background
-    # at timestep t (and bg_cond for the conditioning, packed in a tuple for stage 2).
+    # per-view list of (1, 3, R, R) upscaled stage-1 sheets (stage 2), each already noised to its
+    # view's noise level in class_labels (one per view); bg_t: (1, 3, R, R) background at timestep t,
+    # packed in a tuple with the per-view list of noised backgrounds for the conditioning.
     import torch
     R = x.shape[-1]
     bg_x, bg_c = bg_t
     inputs = []
-    for m in [None] + maps:                                       # the flat view, then each folded view
+    for k, m in enumerate([None] + maps):                         # the flat view, then each folded view
         xv = x if m is None else _gather(x, m, bg_x)
         if cond is not None:
-            cv = cond if m is None else _gather(cond, m, bg_c)
+            cv = cond[k] if m is None else _gather(cond[k], m, bg_c[k])
             xv = torch.cat([xv, cv], 1)
         inputs.append(xv)
     n = len(inputs)
     batch = torch.cat(inputs * 2)                                 # uncond for every view, then cond
     neg, pos = embeds
-    kwargs = {} if class_labels is None else {"class_labels": class_labels.repeat(2 * n)}
+    kwargs = {} if class_labels is None else {"class_labels": class_labels.repeat(2)}
     out = unet(batch, t, encoder_hidden_states=torch.cat([neg, pos]), return_dict=False, **kwargs)[0]
     uncond, text = out.chunk(2)
     noise = uncond[:, :3] + guidance * (text[:, :3] - uncond[:, :3])
@@ -278,13 +279,18 @@ def generate(stage_1, stage_2, views64, views256, embeds, guidance=(7.0, 4.0), s
              fold_weight=0.5, background=0.85, noise_level=250, seed=0, progress=None):
     """Sample the printed side of a fold illusion with DeepFloyd IF.
 
-    stage_1, stage_2: IFPipeline and IFSuperResolutionPipeline. views64, views256: FoldViews at
-    64 and 256 pixels (for the front and back of one model), or matching lists of
-    (FoldViews, "front" or "back") for any folded views, e.g. several stages of folding.
-    embeds: (negative, positive) prompt embeddings for the flat view and then each folded view
-    in order, each of shape (1 + number of folded views, tokens, dim). fold_weight: how much
+    stage_1, stage_2: IFPipeline and IFSuperResolutionPipeline. views64, views256: FoldViews for
+    stage 1 (usually 64 pixels, the size IF's stage 1 was trained at; 128 gives small folded views
+    four times the pixels) and stage 2 (256 pixels), for the front and back of one model, or
+    matching lists of (FoldViews, "front" or "back") for any folded views, e.g. several stages of
+    folding. embeds: (negative, positive) prompt embeddings for the flat view and then each folded
+    view in order, each of shape (1 + number of folded views, tokens, dim). fold_weight: how much
     visible pixels follow the folded pictures (vs. the flat one). background: brightness of the
-    plain backdrop the folded views are drawn on, in [0, 1]. Returns (stage-1 sheet, final sheet) as (R, R, 3) arrays in [0, 1].
+    plain backdrop the folded views are drawn on, in [0, 1]. noise_level: how much stage 2 may
+    depart from stage 1 (0 to 1000; IF's default is 250), one number for every view or one per
+    view (flat first). A high level on a folded view lets stage 2 redraw that picture at 256
+    pixels instead of sharpening stage 1's. Returns (stage-1 sheet, final sheet) as (R, R, 3)
+    arrays in [0, 1].
     """
     import torch
     import torch.nn.functional as F
@@ -301,7 +307,10 @@ def generate(stage_1, stage_2, views64, views256, embeds, guidance=(7.0, 4.0), s
         bg_noise = torch.randn((1, 3, R, R), generator=gen, device=device, dtype=dtype)
         bg_c = None
         if cond is not None:
-            bg_c = pipe.image_noising_scheduler.add_noise(bg, torch.randn_like(bg), class_labels)
+            # The conditioning image and the backdrop around each folded view, noised to each view's level.
+            noise = torch.randn_like(bg)
+            bg_c = [pipe.image_noising_scheduler.add_noise(bg, noise, level.reshape(1)) for level in class_labels]
+            cond = [pipe.image_noising_scheduler.add_noise(cond, noise, level.reshape(1)) for level in class_labels]
         for i, t in enumerate(pipe.scheduler.timesteps):
             # The backdrop is known, so it's re-noised to the current timestep, as in inpainting.
             bg_t = pipe.scheduler.add_noise(bg, bg_noise, t.reshape(1))
@@ -312,13 +321,17 @@ def generate(stage_1, stage_2, views64, views256, embeds, guidance=(7.0, 4.0), s
                 progress(i, len(pipe.scheduler.timesteps))
         return x
 
+    entries1, entries2 = _entries(views64), _entries(views256)
+    R1, R2 = entries1[0][0].res, entries2[0][0].res
+    levels = [noise_level] * (1 + len(entries2)) if np.isscalar(noise_level) else list(noise_level)
+    if len(levels) != 1 + len(entries2):
+        raise ValueError(f"noise_level needs one number, or one per view (flat first): {1 + len(entries2)}")
     with torch.no_grad():
-        x64 = run(stage_1, views64, 64, steps[0], guidance[0])
+        x1 = run(stage_1, entries1, R1, steps[0], guidance[0])
         # Stage 2 sees the stage-1 sheet upscaled and noised, like IFSuperResolutionPipeline.
-        up = F.interpolate(x64.float(), (256, 256), mode="bilinear", align_corners=True).to(dtype)
-        level = torch.tensor([noise_level], device=device)
-        up = stage_2.image_noising_scheduler.add_noise(up, torch.randn_like(up), level)
-        x256 = run(stage_2, views256, 256, steps[1], guidance[1], cond=up, class_labels=level)
+        up = F.interpolate(x1.float(), (R2, R2), mode="bilinear", align_corners=True).to(dtype)
+        x2 = run(stage_2, entries2, R2, steps[1], guidance[1], cond=up,
+                 class_labels=torch.tensor(levels, device=device))
 
     to_img = lambda x: ((x[0].float().clamp(-1, 1) + 1) / 2).permute(1, 2, 0).cpu().numpy()
-    return to_img(x64), to_img(x256)
+    return to_img(x1), to_img(x2)

@@ -277,23 +277,28 @@ def stage_views(stages, models, sides, res, seed=0):
             for m, side, (_, _, _, up) in zip(models, sides, stages)]
 
 
-def plot_story(sheet, stages, models, sides, titles, res=450):
-    """The printed side flat, then each stage folded from it. The folding uses decal.simulate,
-    independently of the pixel maps used to make the sheet, so this doubles as a check."""
+def story_images(sheet, stages, models, sides, res=450):
+    """The printed side flat, then each stage folded from it and held upright, as PIL images. The
+    folding uses decal.simulate, independently of the pixel maps used to make the sheet, so this
+    doubles as a check."""
     from decal import simulate
-    big = np.asarray(Image.fromarray((np.clip(sheet, 0, 1) * 255).round().astype(np.uint8)).resize(
-        (1024, 1024), Image.LANCZOS), float) / 255
-    raw = big[:, ::-1]                                   # printed side 2 is the sheet turned over
-    fig, axes = plt.subplots(1, len(models) + 1, figsize=(4.2 * (len(models) + 1), 4.6))
-    axes[0].imshow(big)
-    axes[0].set_title(titles[0])
-    for ax, m, side, (_, _, _, up), title in zip(axes[1:], models, sides, stages, titles[1:]):
+    flat = Image.fromarray((np.clip(sheet, 0, 1) * 255).round().astype(np.uint8)).resize((1024, 1024), Image.LANCZOS)
+    raw = np.asarray(flat, float)[:, ::-1] / 255         # printed side 2 is the sheet turned over
+    images = [flat]
+    for m, side, (_, _, _, up) in zip(models, sides, stages):
         sim, _ = simulate(m, {2: dict(color=raw, printed=np.ones(raw.shape[:2], bool))}, res=res)
         img = Image.fromarray((sim[side] * 255).round().astype(np.uint8))
-        img = img.rotate(-upright_turn(m, side, up), Image.BICUBIC, expand=True, fillcolor=(217, 217, 217))
+        images.append(img.rotate(-upright_turn(m, side, up), Image.BICUBIC, expand=True, fillcolor=(217, 217, 217)))
+    return images
+
+
+def plot_story(sheet, stages, models, sides, titles, res=450):
+    """The printed side flat, then each stage folded from it (see story_images)."""
+    images = story_images(sheet, stages, models, sides, res)
+    fig, axes = plt.subplots(1, len(images), figsize=(4.2 * len(images), 4.6))
+    for ax, img, title in zip(axes, images, titles):
         ax.imshow(img)
         ax.set_title(title)
-    for ax in axes:
         ax.axis("off")
     fig.tight_layout()
     return fig
