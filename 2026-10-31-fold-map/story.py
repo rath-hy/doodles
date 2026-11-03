@@ -10,7 +10,7 @@ placements (and which way round each stage is held) so the characters compete fo
 pixels as possible. The flat character then goes where the folded ones leave room. Everything
 else stays paper white, so a slightly sloppy fold only shows a little more white.
 
-Writes story_sheet.png (the printed side, 300 dpi at 15 cm) and story_preview.png (the sheet,
+Writes story_sheet.png (the printed side, 300 dpi at 20 cm) and story_preview.png (the sheet,
 and each stage folded virtually from it).
 
 story.ipynb uses the same stages with DeepFloyd IF instead, for pictures that hide each other.
@@ -25,7 +25,7 @@ from matplotlib import font_manager
 from PIL import Image, ImageDraw, ImageFont
 
 from fold_map import FoldedModel, apply, inside
-from illusion import FoldViews
+from illusion import SHEET_MM, FoldViews
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 O, A, B = (0.5, 0.5), (0.0, 0.0), (1.0, 0.0)
@@ -312,7 +312,7 @@ def main():
     ap.add_argument("--text", default=None, help="one character per stage: flat, then each folded stage (default 0, 1, 2, ...)")
     ap.add_argument("--scatter", type=float, default=2.0,
                     help="how much to prefer characters split across pieces of paper, so they don't read when flat")
-    ap.add_argument("--res", type=int, default=1800, help="printed sheet size in pixels (1800 = 15 cm at 300 dpi)")
+    ap.add_argument("--res", type=int, default=2362, help="printed sheet size in pixels (2362 = 20 cm at 300 dpi)")
     args = ap.parse_args()
     stages, models = load_stages(args.stages)
     args.text = args.text or "0123456789"[:len(stages) + 1]
@@ -324,7 +324,7 @@ def main():
     for k, c in report.items():
         print(f"{k}: {c}")
     printed, _ = render(args.text, models, views, places, args.res)
-    Image.fromarray(printed).save("story_sheet.png", dpi=(args.res / 150 * 25.4,) * 2)
+    Image.fromarray(printed).save("story_sheet.png", dpi=(args.res / SHEET_MM * 25.4,) * 2)
     titles = [f"flat: {args.text[0]}"] + [f"{v.name} ({v.view}): {ch}" for v, ch in zip(views, args.text[1:])]
     plot_story(printed.astype(float) / 255, stages, models, [v.view for v in views], titles).savefig("story_preview.png", dpi=80)
     print("wrote story_sheet.png and story_preview.png")

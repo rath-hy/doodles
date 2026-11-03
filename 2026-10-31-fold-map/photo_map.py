@@ -27,6 +27,7 @@ import numpy as np
 import cv2
 
 from fold_map import apply
+from illusion import SHEET_MM
 
 
 # ---------------------------------------------------------------------------------------------
@@ -51,11 +52,12 @@ class Board:
         return self.sheet_mm / self.squares
 
 
-def make_board(squares=44, sheet_mm=148.5, px_per_square=40, marker_ratio=0.75):
+def make_board(squares=44, sheet_mm=SHEET_MM, px_per_square=40, marker_ratio=0.75):
     """A ChArUco board filling a square sheet. Half the squares hold a marker, and OpenCV's
-    4x4 dictionary has 1,000 markers, so squares can go up to 44 per side: on 148.5 mm (the square
-    the story notebooks print), 3.4 mm squares with 2.5 mm markers. Smaller is better, because a
-    marker cut by a crease or covered by another layer can't be read."""
+    4x4 dictionary has 1,000 markers, so squares can go up to 44 per side: on 200 mm (the square
+    the story notebooks print), 4.5 mm squares with 3.4 mm markers. More squares is better, because
+    a marker cut by a crease or covered by another layer can't be read. (Folding scales with the
+    paper, so what matters is squares per sheet, not their size in mm.)"""
     if squares * squares // 2 > 1000:
         raise ValueError("at most 44 squares per side: the dictionary has 1,000 markers")
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_1000)
@@ -67,15 +69,16 @@ def make_board(squares=44, sheet_mm=148.5, px_per_square=40, marker_ratio=0.75):
     return Board(squares, sheet_mm, image, corners, dictionary, charuco)
 
 
-def save_board_pdf(board, path, page_mm=(210, 297), margin_mm=20):
-    """An A4 PDF with the board at actual size, a thin cut line around it, and a 100 mm scale
-    bar to check the printer didn't rescale it. Print at 100% (not "fit to page")."""
+def save_board_pdf(board, path, page_mm=(210, 297), top_mm=10):
+    """An A4 PDF with the board at actual size, centered across the page, a thin cut line around
+    it, and a 100 mm scale bar to check the printer didn't rescale it. Print at 100% (not "fit to
+    page")."""
     from PIL import Image, ImageDraw
     dpi = board.px_mm * 25.4
     W, H = (round(m * board.px_mm) for m in page_mm)
     page = Image.new("L", (W, H), 255)
-    x0 = y0 = round(margin_mm * board.px_mm)
     R = board.image.shape[0]
+    x0, y0 = (W - R) // 2, round(top_mm * board.px_mm)
     page.paste(Image.fromarray(board.image), (x0, y0))
     draw = ImageDraw.Draw(page)
     draw.rectangle([x0 - 1, y0 - 1, x0 + R, y0 + R], outline=160)

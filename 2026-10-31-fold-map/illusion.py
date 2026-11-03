@@ -173,6 +173,23 @@ def printable(sheet, pixels=2400):
     return Image.fromarray((np.clip(sheet, 0, 1) * 255).round().astype(np.uint8)).resize((pixels, pixels), Image.LANCZOS)
 
 
+SHEET_MM = 200          # printed square: about as big as fits on A4 inside a home printer's margins
+
+
+def print_page(sheet, path, sheet_mm=SHEET_MM, dpi=300, page_mm=(210, 297), top_mm=10):
+    """An A4 PDF with the sheet at actual size, centered across the page, with a thin gray cut line
+    around it. Print at 100% (not "fit to page"). Returns the sheet as printed (a PIL image)."""
+    from PIL import Image, ImageDraw
+    px = lambda mm: round(mm / 25.4 * dpi)
+    img = printable(sheet, px(sheet_mm))
+    page = Image.new("RGB", (px(page_mm[0]), px(page_mm[1])), "white")
+    x0, y0 = (page.width - img.width) // 2, px(top_mm)
+    page.paste(img, (x0, y0))
+    ImageDraw.Draw(page).rectangle([x0 - 2, y0 - 2, x0 + img.width + 1, y0 + img.height + 1], outline=(170, 170, 170))
+    page.save(path, resolution=dpi)
+    return img
+
+
 def plot_result(views, sheet, title="", sim_res=500):
     """The sheet flat (corners A-D marked), and the folded front and back simulated from it with
     decal.simulate, which folds the sheet independently of the views used to make it."""

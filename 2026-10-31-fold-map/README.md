@@ -96,11 +96,13 @@ To compare models, I measured Flat-Folder examples by how much paper each finish
 
 The bird base turned out to be a poor story stage: its two pieces are big uncut halves of the sheet. To choose stages by folding rather than by what a crease pattern can describe, [`photo_map.py`](photo_map.py) and [`photo_map.ipynb`](photo_map.ipynb) measure fold maps from photos instead:
 
-1. Print a black-and-white ChArUco board ([`prints/charuco_board_a4.pdf`](prints/charuco_board_a4.pdf)): OpenCV's camera calibration target, a checkerboard with a numbered marker in each white square. 44 × 44 squares of 3.4 mm on a 148.5 mm sheet, 968 markers.
+1. Print a black-and-white ChArUco board ([`prints/charuco_board_a4.pdf`](prints/charuco_board_a4.pdf)): OpenCV's camera calibration target, a checkerboard with a numbered marker in each white square. 44 × 44 squares of 4.5 mm on a 200 mm sheet, 968 markers.
 2. Fold it, and photograph each view of each stage you want, straight on, against a colored backdrop.
 3. Each marker found says which part of the sheet that patch is and how it's turned. Markers that agree on one transform form a rigid piece (RANSAC), and every paper pixel goes to the piece whose transform best predicts the board's pattern there.
 
-Tested on photos simulated from the known crane maps (with blur, noise, uneven light and shadows along layer edges): about 95% of the crane's visible paper is recovered to within 0.5 mm, about 1% is wrong, and the rest is lost at the neck and tail tips and along seams. The bases come out at 99%. Marker size matters most: 6.2 mm squares lose 30% of the crane. The camera needs at least 8 pixels per mm of paper, which a phone gives easily.
+Tested on photos simulated from the known crane maps (with blur, noise, uneven light and shadows along layer edges): about 95% of the crane's visible paper is recovered to within 0.5 mm, about 1% is wrong, and the rest is lost at the neck and tail tips and along seams. The bases come out at 99%. The number of squares per sheet matters most: with 24 a side, 44% of the crane is lost. The camera needs at least 6 pixels per mm of paper, which a phone gives easily.
+
+**Print size.** The board and the story prints are 200 mm squares, one per A4 page (`illusion.print_page`), about as big as fits inside a home printer's margins. Folding scales with the paper, so a bigger sheet doesn't give a piece more markers, but it makes a millimeter of folding error a smaller share of each piece. Calibrate with the same size you print.
 
 ## Next
 
