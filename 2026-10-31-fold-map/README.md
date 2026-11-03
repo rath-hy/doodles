@@ -92,6 +92,16 @@ Round 1: letting stage 2 redraw changed almost nothing, because every pixel a fo
 
 To compare models, I measured Flat-Folder examples by how much paper each finished model shows per view and how scrambled it is. The crane shows 12% of the sheet per view, in 4 sizable pieces, the largest a quarter of the view. Yakko shows 17% in 8, the largest an eighth, and simple models like the pinwheel show 30–40% but in a few big pieces, which would be readable flat. Yakko can't be used for the folding story yet: keeping each crease's mountain or valley, no subset of Flat-Folder's Yakko creases folds flat except the whole model (and the sheet with its corner tips folded in), so its intermediate stages would have to be built from its actual folding sequence.
 
+## Fold maps from photos
+
+The bird base turned out to be a poor story stage: its two pieces are big uncut halves of the sheet. To choose stages by folding rather than by what a crease pattern can describe, [`photo_map.py`](photo_map.py) and [`photo_map.ipynb`](photo_map.ipynb) measure fold maps from photos instead:
+
+1. Print a black-and-white ChArUco board ([`prints/charuco_board_a4.pdf`](prints/charuco_board_a4.pdf)): OpenCV's camera calibration target, a checkerboard with a numbered marker in each white square. 44 × 44 squares of 3.4 mm on a 148.5 mm sheet, 968 markers.
+2. Fold it, and photograph each view of each stage you want, straight on, against a colored backdrop.
+3. Each marker found says which part of the sheet that patch is and how it's turned. Markers that agree on one transform form a rigid piece (RANSAC), and every paper pixel goes to the piece whose transform best predicts the board's pattern there.
+
+Tested on photos simulated from the known crane maps (with blur, noise, uneven light and shadows along layer edges): about 95% of the crane's visible paper is recovered to within 0.5 mm, about 1% is wrong, and the rest is lost at the neck and tail tips and along seams. The bases come out at 99%. Marker size matters most: 6.2 mm squares lose 30% of the crane. The camera needs at least 8 pixels per mm of paper, which a phone gives easily.
+
 ## Next
 
 - Splice an image onto the visible regions using `fold_map.npz`.
