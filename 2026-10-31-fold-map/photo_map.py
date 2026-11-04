@@ -206,6 +206,16 @@ def _project(M, P):
     return q[:, :2] / q[:, 2:]
 
 
+def _px_per_mm(M, board, ids):
+    # Photo pixels per sheet mm around a piece's markers. A homography's scale changes across the
+    # sheet, so this measures it where the piece is.
+    P = np.concatenate([board.corners[j] for j in ids])
+    c = P.mean(0)
+    a, b, d = _project(M, np.array([c, c + [1, 0], c + [0, 1]]))
+    u, v = b - a, d - a
+    return np.sqrt(abs(u[0] * v[1] - u[1] * v[0]))
+
+
 def fit_pieces(markers, board, kind="similarity", tol=0.15):
     """Group detected markers into rigid pieces of paper. Repeatedly takes the transform (sheet mm
     -> photo pixels) of one marker that the most other markers agree with, to within tol marker
@@ -267,8 +277,7 @@ def dense_map(photo, board, pieces, mask=None, window_mm=None, min_ncc=0.5):
     label = np.full((H, W), -1)
     sheet_mm = np.full((H, W, 2), np.nan)
     for k, (M, ids) in enumerate(pieces):
-        px_per_mm = np.sqrt(abs(np.linalg.det(M[:2, :2])))
-        win = int(round((window_mm or board.square_mm) * px_per_mm)) | 1
+        win = int(round((window_mm or board.square_mm) * _px_per_mm(M, board, ids))) | 1
         xy = _project(np.linalg.inv(M), pts).reshape(H, W, 2)
         pred = sample_board(board, xy)
         valid = mask & np.isfinite(pred)
@@ -303,6 +312,195 @@ def evaluate(result, truth, tol_mm=0.5):
                 missing=float((shown & ~got).sum() / shown.sum()),
                 median_error_mm=float(np.median(err[both])) if both.any() else np.nan,
                 error_mm=np.where(both, err, np.nan))
+
+
+# ---------------------------------------------------------------------------------------------
+# Putting a picture on a fold: mark an area in a photo, get the sheet to print
+#
+# The photo says what the viewer will see from that spot. So for each sheet point visible inside
+# the marked area, print the picture's color at the place that point lands in the photo. Fold the
+# print the same way, look from the same spot, and the picture lines up.
+
+
+def load_photo(path):
+    """A photo as RGB floats in [0, 1], turned upright by its EXIF orientation."""
+    img = cv2.imread(str(path))
+    if img is None:
+        raise FileNotFoundError(path)
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255
+
+
+def marked_area(marked, min_share=0.0005):
+    """The area marked in magenta on a copy of the photo, outlined or filled in, as a boolean
+    mask. Several separate marks are fine, but an outline has to be closed."""
+    hsv = cv2.cvtColor((np.clip(marked, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)
+    ink = ((hsv[..., 0] > 135) & (hsv[..., 0] < 165) & (hsv[..., 1] > 90) & (hsv[..., 2] > 130)).astype(np.uint8)
+    ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    outlines, _ = cv2.findContours(ink, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    outlines = [c for c in outlines if cv2.contourArea(c) > min_share * ink.size]
+    if not outlines:
+        raise ValueError("no magenta area found in the marked photo: is the outline closed?")
+    area = np.zeros(ink.shape, np.uint8)
+    cv2.drawContours(area, outlines, -1, 1, cv2.FILLED)
+    if cv2.distanceTransform(area, cv2.DIST_L2, 5).max() < 0.01 * max(ink.shape):
+        raise ValueError("the magenta mark is just a thin line: close the outline, or fill the area in")
+    return area.astype(bool)
+
+
+def map_area(photo, board, area, kind="homography", min_markers=4, min_share=0.02):
+    """recover() for a marked area of a photo. Pieces need min_markers markers, since one small
+    marker's transform extrapolates badly. Stray matches under min_share of the area are dropped,
+    and pixels that matched no piece (glare, curved edges) go to the nearest piece that did.
+    Returns a dict like recover()'s, with label and sheet_mm set inside the area, plus matched:
+    the share of the area that matched without that help."""
+    markers = detect(photo, board)
+    pieces = [p for p in fit_pieces(markers, board, kind) if len(p[1]) >= min_markers]
+    if not pieces:
+        raise ValueError(f"only {len(markers)} markers found, too few to form a piece of paper")
+    _, label = dense_map(photo, board, pieces, mask=area)
+    total = area.sum()
+    for k in np.unique(label[label >= 0]):
+        if (label == k).sum() < min_share * total:
+            label[label == k] = -1
+    matched = float((label[area] >= 0).mean())
+    if matched == 0:
+        raise ValueError("no piece of paper with enough markers lies inside the marked area")
+    missing = area & (label < 0)
+    if missing.any():                   # copy each missing pixel's label from its nearest labeled pixel
+        _, nearest = cv2.distanceTransformWithLabels((label < 0).astype(np.uint8), cv2.DIST_L2, 5,
+                                                     labelType=cv2.DIST_LABEL_PIXEL)
+        values = np.zeros(nearest.max() + 1, label.dtype)
+        values[nearest[label >= 0]] = label[label >= 0]
+        label[missing] = values[nearest[missing]]
+    H, W = label.shape
+    sheet_mm = np.full((H, W, 2), np.nan)
+    for k, (M, _) in enumerate(pieces):
+        rows, cols = np.nonzero(label == k)
+        if len(rows):
+            sheet_mm[rows, cols] = _project(np.linalg.inv(M), np.c_[cols, rows].astype(float))
+    return dict(markers=markers, pieces=pieces, sheet_mm=sheet_mm, label=label, area=area, matched=matched)
+
+
+def place_picture(picture, area, fit="contain"):
+    """The picture laid over the photo, upright in the frame and centered on the marked area.
+    fit: "contain" shows the whole picture inside the area's bounding box, and "cover" fills the
+    box, cropping what sticks out. Returns (image (H, W, 3), mask (H, W): where the picture is)."""
+    x, y, w, h = cv2.boundingRect(area.astype(np.uint8))
+    ph, pw = picture.shape[:2]
+    scale = (min if fit == "contain" else max)(w / pw, h / ph)
+    nw, nh = max(1, round(pw * scale)), max(1, round(ph * scale))
+    small = cv2.resize(picture.astype(np.float32), (nw, nh), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+    small = np.clip(small, 0, 1)
+    x0, y0 = x + (w - nw) // 2, y + (h - nh) // 2
+    # Crop whatever falls outside the photo or, for "cover", the box.
+    left, top = max(x - x0, 0), max(y - y0, 0)
+    right, bottom = min(x + w - x0, nw), min(y + h - y0, nh)
+    image = np.ones(area.shape + (3,), np.float32)
+    mask = np.zeros(area.shape, bool)
+    image[y0 + top:y0 + bottom, x0 + left:x0 + right] = small[top:bottom, left:right]
+    mask[y0 + top:y0 + bottom, x0 + left:x0 + right] = True
+    return image, mask
+
+
+def project_picture(picture, mapped, board, fit="contain", dpi=300):
+    """The sheet to print: for each sheet point visible in the marked area, the picture's color
+    where that point lands in the photo. Returns (sheet (R, R, 3), printed (R, R): where it has
+    ink). Everything else stays white."""
+    overlay, inside = place_picture(picture, mapped["area"], fit)
+    R = round(board.sheet_mm / 25.4 * dpi)
+    u = (np.arange(R) + 0.5) * board.sheet_mm / R
+    xx, yy = np.meshgrid(u, u)
+    grid = np.stack([xx.ravel(), yy.ravel()], 1)
+    sheet = np.ones((R, R, 3), np.float32)
+    printed = np.zeros((R, R), bool)
+    H, W = inside.shape
+    for k, (M, ids) in enumerate(mapped["pieces"]):
+        if not (mapped["label"] == k).any():
+            continue
+        q = np.c_[grid, np.ones(len(grid))] @ M.T
+        # A homography also maps points from behind the camera into the frame: keep only those on
+        # the same side as the piece's own markers.
+        c = np.concatenate([board.corners[j] for j in ids]).mean(0)
+        front = (q[:, 2] * (M[2] @ [c[0], c[1], 1])) > 0
+        p = (q[:, :2] / np.where(front, q[:, 2:].T, 1).T).reshape(R, R, 2)
+        col, row = np.rint(p[..., 0]).astype(int), np.rint(p[..., 1]).astype(int)
+        ok = front.reshape(R, R) & (col >= 0) & (col < W) & (row >= 0) & (row < H)
+        take = np.zeros((R, R), bool)
+        take[ok] = (mapped["label"][row[ok], col[ok]] == k) & inside[row[ok], col[ok]]
+        take &= ~printed
+        colors = cv2.remap(overlay, p[..., 0].astype(np.float32), p[..., 1].astype(np.float32), cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_REPLICATE)
+        sheet[take] = colors[take]
+        printed |= take
+    return sheet, printed
+
+
+def predicted_view(photo, sheet, mapped, board):
+    """The photo with the marked area repainted from the printed sheet, folded by the recovered
+    map: what you should see from that spot if the print is folded like the board."""
+    out = photo.copy()
+    s = sheet.shape[0] / board.sheet_mm
+    xy = np.nan_to_num(mapped["sheet_mm"], nan=-10.0) * s - 0.5
+    painted = cv2.remap(sheet, xy[..., 0].astype(np.float32), xy[..., 1].astype(np.float32), cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=(1, 1, 1))
+    out[mapped["area"]] = painted[mapped["area"]]
+    return np.clip(out, 0, 1)
+
+
+def save_print(sheet, path, board, dpi=300, page_mm=(210, 297), top_mm=10):
+    """An A4 PDF of the sheet at the board's size and position. The sheet stays clean inside a dark
+    cut line, and everything outside it is hatched, to throw away. Print at 100%."""
+    from PIL import Image, ImageDraw, ImageFont
+    px = lambda mm: round(mm / 25.4 * dpi)
+    W, H = px(page_mm[0]), px(page_mm[1])
+    R = px(board.sheet_mm)
+    img = Image.fromarray((np.clip(sheet, 0, 1) * 255).astype(np.uint8)).resize((R, R), Image.LANCZOS)
+    page = Image.new("RGB", (W, H), "white")
+    draw = ImageDraw.Draw(page)
+    for d in range(-H, W, px(6)):
+        draw.line([d, H, d + H, 0], fill=(200, 200, 200), width=2)
+    x0, y0 = (W - R) // 2, px(top_mm)
+    page.paste(img, (x0, y0))
+    draw.rectangle([x0 - 3, y0 - 3, x0 + R + 2, y0 + R + 2], outline=(0, 0, 0), width=3)
+    bx, by = x0, y0 + R + px(10)              # the label and scale bar, on a white box in the waste
+    draw.rectangle([bx - px(3), by - px(4), bx + px(125), by + px(15)], fill="white", outline=(120, 120, 120))
+    draw.line([bx, by, bx + px(100), by], fill=0, width=3)
+    for x in (bx, bx + px(100)):
+        draw.line([x, by - 12, x, by + 12], fill=0, width=3)
+    try:
+        font = ImageFont.load_default(size=px(3))
+    except TypeError:                         # Pillow before 10.1
+        font = None
+    draw.text((bx, by + px(3)), f"This bar is 100 mm: print at 100%, not fit to page.\n"
+                                f"Cut along the black line. Keep the {board.sheet_mm:g} mm square, "
+                                f"throw away the hatched paper.", fill=0, font=font, spacing=px(1.5))
+    page.save(path, resolution=dpi)
+    return page
+
+
+def plot_projection(photo, mapped, sheet, board):
+    """The marked area and markers found, the sheet to print, and the predicted view."""
+    import matplotlib.pyplot as plt
+    area = mapped["area"]
+    x, y, w, h = cv2.boundingRect(area.astype(np.uint8))
+    m = max(w, h) // 3
+    zoom = (slice(max(y - m, 0), y + h + m), slice(max(x - m, 0), x + w + m))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5.6))
+    shown = photo.copy()
+    shown[area] = 0.6 * shown[area] + 0.4 * np.array([1, 0, 1])
+    axes[0].imshow(shown)
+    for c in mapped["markers"].values():
+        axes[0].add_patch(plt.Polygon(c, fill=False, ec="#f33", lw=0.5))
+    axes[0].set_title(f"{len(mapped['markers'])} markers; {mapped['matched']:.0%} of the area matched directly")
+    axes[1].imshow(sheet)
+    axes[1].add_patch(plt.Rectangle((0, 0), sheet.shape[1] - 1, sheet.shape[0] - 1, fill=False, ec="k"))
+    axes[1].set_title("the sheet to print, unfolded")
+    axes[2].imshow(predicted_view(photo, sheet, mapped, board)[zoom])
+    axes[2].set_title("predicted view from the camera")
+    for ax in axes:
+        ax.axis("off")
+    fig.tight_layout()
+    return fig
 
 
 # ---------------------------------------------------------------------------------------------

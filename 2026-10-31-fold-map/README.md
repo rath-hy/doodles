@@ -104,7 +104,13 @@ Tested on photos simulated from the known crane maps (with blur, noise, uneven l
 
 **Print size.** The board and the story prints are 200 mm squares, one per A4 page (`illusion.print_page`), about as big as fits inside a home printer's margins. Folding scales with the paper, so a bigger sheet doesn't give a piece more markers, but it makes a millimeter of folding error a smaller share of each piece. Calibrate with the same size you print.
 
+## Pictures on a fold, from a photo
+
+The Ambassadors idea, with a first real photo: I folded the board into a sanbo (a little box), photographed it, and marked its floor in magenta on a copy. Section 6 of [`photo_map.ipynb`](photo_map.ipynb) works out which sheet points show inside the marked area and prints each one with the picture's color at the place it lands in the photo. The output is an A4 PDF with the 200 mm sheet inside a black cut line and the waste hatched ([`prints/box_holbein_a4.pdf`](prints/box_holbein_a4.pdf), Holbein's self-portrait on the floor).
+
+On the real photo, 149 markers were found, about 60 pixels per side. The floor is one rigid piece, fitted to about 0.15 mm, and 88% of the marked area matched directly. The rest (glare, and paper curving up into the walls) borrows the floor's transform. The photo is taken from straight above a flat floor, so the picture lands undistorted in the middle of the sheet: this tests the pipeline, and isn't anamorphic yet. That needs an angled view, or an area spanning several facets. On simulated photos with a known camera tilt, bases with big pieces stay within 0.5 mm up to 60°. The crane loses about 10% of a marked area to slivers up to 45°, and 43% at 60°. The print itself hasn't been folded yet.
+
 ## Next
 
 - Splice an image onto the visible regions using `fold_map.npz`.
-- Measure the fold map from photos of a folded sheet printed with a coded pattern, and compare it to the computed map.
+- Compare a fold map measured from photos to the computed map.
