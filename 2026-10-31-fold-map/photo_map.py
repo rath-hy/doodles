@@ -299,6 +299,119 @@ def recover(photo, board, kind="similarity"):
     return dict(markers=markers, pieces=pieces, sheet_mm=sheet_mm, label=label)
 
 
+def _seam_lines(points, tol, min_length, gap, rng, tries=300):
+    # Straight runs of points, by sequential RANSAC. Each line must be supported along min_length,
+    # and a stretch with no support for over gap ends it. Returns [(center, direction, t0, t1)].
+    lines = []
+    left = points.astype(np.float32)
+    while len(left) >= min_length:
+        best = None
+        for _ in range(tries):
+            a, b = left[rng.choice(len(left), 2, replace=False)]
+            d = b - a
+            n = np.hypot(*d)
+            if n < tol:
+                continue
+            count = (np.abs((left - a) @ (np.array([-d[1], d[0]]) / n)) < tol).sum()
+            if best is None or count > best[0]:
+                best = (count, a, d / n)
+        if best is None or best[0] < min_length:
+            break
+        _, a, d = best
+        for _ in range(3):              # refit by total least squares
+            near = np.abs((left - a) @ np.array([-d[1], d[0]])) < tol
+            a = left[near].mean(0)
+            d = np.linalg.svd(left[near] - a, full_matrices=False)[2][0]
+        near = np.abs((left - a) @ np.array([-d[1], d[0]])) < tol
+        t = (left[near] - a) @ d
+        order = np.sort(t)
+        cuts = np.nonzero(np.diff(order) > gap)[0]
+        starts = np.r_[0, cuts + 1]
+        ends = np.r_[cuts, len(order) - 1]
+        for i, j in zip(starts, ends):
+            if order[j] - order[i] >= min_length:
+                lines.append((a, d, order[i], order[j]))
+        left = left[~near]
+    return lines
+
+
+def straighten(result, photo, board, mask=None, check_squares=0.5, min_ncc=0.5, seed=0):
+    """Straighten the seams of a recovered map. Pieces of flat-folded paper meet along straight
+    lines, but the matching window straddles them, which makes seams ragged. This drops specks,
+    fits lines to the boundary between each pair of neighboring pieces, redraws the pixels near
+    each line to its correct side, and fills narrow gaps where the nearest piece's pattern matches
+    the photo. It can't recover paper with no piece, like a tip with no whole marker.
+    Returns a copy of result with new label and sheet_mm, plus seams: [(a, b, end1, end2)]."""
+    rng = np.random.default_rng(seed)
+    pieces = result["pieces"]
+    if not pieces:
+        return {**result, "seams": []}
+    label = result["label"].copy()
+    mask = paper_mask(photo) if mask is None else mask
+    H, W = label.shape
+    win = float(np.median([board.square_mm * _px_per_mm(M, board, ids) for M, ids in pieces]))
+
+    # Specks: fragments of a piece smaller than about one square.
+    for k in np.unique(label[label >= 0]):
+        n, comps, stats, _ = cv2.connectedComponentsWithStats((label == k).astype(np.uint8), connectivity=8)
+        for c in range(1, n):
+            if stats[c, cv2.CC_STAT_AREA] < win * win:
+                label[comps == c] = -1
+
+    # Seam points: where two pieces meet, or face each other across a narrow gap.
+    reach = 0.75 * win
+    present = [int(k) for k in np.unique(label[label >= 0])]
+    dist = {k: cv2.distanceTransform((label != k).astype(np.uint8), cv2.DIST_L2, 5) for k in present}
+    seams = []
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    for i, a in enumerate(present):
+        for b in present[i + 1:]:
+            seam = (dist[a] < reach) & (dist[b] < reach) & (np.abs(dist[a] - dist[b]) <= 1.5) & mask
+            if seam.sum() < win:
+                continue
+            rows, cols = np.nonzero(seam)
+            for c, d, t0, t1 in _seam_lines(np.c_[cols, rows], 0.15 * win, win, 0.5 * win, rng):
+                along = (xx - c[0]) * d[0] + (yy - c[1]) * d[1]
+                across = -(xx - c[0]) * d[1] + (yy - c[1]) * d[0]
+                band = (np.abs(across) < reach) & (along >= t0) & (along <= t1) & mask
+                band &= (label == a) | (label == b)     # unmatched pixels wait for the checked fill below
+                # Which side is which comes from the pixels just outside the band's middle.
+                if (across[label == a].mean() if (label == a).any() else 0) >= (across[label == b].mean() if (label == b).any() else 0):
+                    label[band & (across >= 0)], label[band & (across < 0)] = a, b
+                else:
+                    label[band & (across >= 0)], label[band & (across < 0)] = b, a
+                seams.append((a, b, c + t0 * d, c + t1 * d))
+
+    # Narrow gaps left over go to the nearest piece, if its predicted pattern matches the photo there.
+    if (label >= 0).any():
+        dist_any, nearest = cv2.distanceTransformWithLabels((label < 0).astype(np.uint8), cv2.DIST_L2, 5,
+                                                            labelType=cv2.DIST_LABEL_PIXEL)
+        values = np.zeros(nearest.max() + 1, label.dtype)
+        values[nearest[label >= 0]] = label[label >= 0]
+        fill = (label < 0) & mask & (dist_any < 0.5 * win)
+        gray = photo.mean(-1) if photo.ndim == 3 else photo
+        pts = np.stack([xx.ravel(), yy.ravel()], 1)
+        for k in present:
+            region = fill & (values[nearest] == k)
+            if not region.any():
+                continue
+            M, ids = pieces[k]
+            xy = _project(np.linalg.inv(M), pts).reshape(H, W, 2)
+            pred = sample_board(board, xy)
+            valid = mask & np.isfinite(pred)
+            pred = cv2.GaussianBlur(np.nan_to_num(pred, nan=0.5).astype(np.float32), (0, 0), 1.0)
+            size = int(round(check_squares * board.square_mm * _px_per_mm(M, board, ids))) | 1
+            ncc = _local_ncc(gray, pred, valid, size)
+            label[region & (ncc > min_ncc)] = k
+
+    sheet_mm = np.full((H, W, 2), np.nan)
+    for k, (M, _) in enumerate(pieces):
+        rows, cols = np.nonzero(label == k)
+        if len(rows):
+            sheet_mm[rows, cols] = _project(np.linalg.inv(M), np.c_[cols, rows].astype(float))
+    return {**result, "label": label, "sheet_mm": sheet_mm, "seams": seams}
+
+
 def evaluate(result, truth, tol_mm=0.5):
     """Compare a recovered map to the true one, over the paper that shows the printed side:
     the share of it recovered to within tol_mm, wrong by over 2 tol_mm, and not recovered."""
