@@ -16,4 +16,10 @@ The model is the [hinged square box](https://origamiok.com/origami-hinged-square
 
 [`prints/test_sheet_A.pdf`](prints/test_sheet_A.pdf) and [`prints/test_sheet_B.pdf`](prints/test_sheet_B.pdf) are A4 test sheets with both cats at 1.4, 1.0 and 0.74 mm cells. Print both at 100%, lay A on B with both printed sides up, line up the crosses, and hold them to a light. [`prints/faces/`](prints/faces/) has the four walls and the floor at actual size, to place on the folded sheet.
 
-So far this is a simulation. The sheets haven't been printed, and the box hasn't been folded.
+I printed the test sheets and held them to a light, but regular printer paper is too opaque, so this needs translucent paper. The box hasn't been folded.
+
+## Next design
+
+The notebook and print files above are for the hinged box, with both cats on the walls. The new plan is Kunihiko Kasahara's seamless cube, the one from the [Holbein projection](../2026-10-31-fold-map/README.md#a-portrait-across-three-faces-of-a-cube). The floor and lid would form a dead cat from above, and the two pairs of walls would form a live cat and the radioactive source. None of that is built yet.
+
+The hard part is parallax. On a 50 mm cube, each pair sits about 50 mm apart, so at 30 cm, moving your eye 1 mm shifts the layers against each other by about 0.17 mm. Things to try: a fixed peephole, coarser cells, and printing the far layer smaller to cancel perspective. Any paper tucked behind the faces will also block light, so a folded cube needs testing against a light first.

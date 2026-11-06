@@ -66,7 +66,7 @@ The geometry and the sampler's bookkeeping were tested on CPU with a stand-in mo
 
 ### Trial 1
 
-A city street at night (oil painting) flat, a red fox on the front and a white owl on the back ([`prints/`](prints/): the generated sheet, the A4 print file with two copies, and the virtual fold). Folded on the computer, both animals appear. Printed on a home printer and folded by hand ([`crane_pics/trial_1/`](crane_pics/trial_1/), including a timelapse), the fox comes through but the owl is barely visible: the print is darker and muddier than the screen, white crease lines cut across the picture, and the folds aren't exact. Bolder, simpler, higher-contrast pictures should survive better.
+A city street at night (oil painting) flat, a red fox on one wing and a white owl on the other, which the code calls the front and back views ([`prints/`](prints/): the generated sheet, the A4 print file with two copies, and the virtual fold). Folded on the computer, both animals appear. Printed on a home printer and folded by hand ([`crane_pics/trial_1/`](crane_pics/trial_1/), including a timelapse), the fox comes through but the owl is barely visible: the print is darker and muddier than the screen, white crease lines cut across the picture, and the folds aren't exact. Bolder, simpler, higher-contrast pictures should survive better.
 
 ## Folding story: a picture at every stage
 
@@ -116,7 +116,7 @@ On the real photo, 149 markers were found, about 60 pixels per side. The floor i
 
 The first real anamorphosis: [`cube_anamorphosis.ipynb`](cube_anamorphosis.ipynb) traces it step by step. I folded the board into Kunihiko Kasahara's seamless cube and photographed one corner. No marking this time, because the three visible faces are the canvas. They turn out to be three 50 mm squares of the sheet that meet at its center, so the middle of the sheet becomes the corner facing the camera.
 
-Real faces aren't flat. A flat fit per face misses by 7 to 13 pixels, so each face gets a homography plus a thin-plate spline fitted to its markers and the checker corners between them, which brings points it wasn't fitted to down to about 0.1 to 0.3 mm. The output, [`prints/cube_holbein_a4.pdf`](prints/cube_holbein_a4.pdf), is Holbein's self-portrait skewed into an L, with 4 mm of bleed past each edge. Fold it, look from about 18 cm with one eye, and it should straighten out. That's still a prediction: it hasn't been folded, and the board's bow may not repeat. The right face was also at least a third dimmer in the photo's light, so it needs even lighting.
+Real faces aren't flat. A flat fit per face misses by 7 to 13 pixels, so each face gets a homography plus a thin-plate spline fitted to its markers and the checker corners between them, which brings points it wasn't fitted to down to about 0.1 to 0.3 mm. The output, [`prints/cube_holbein_a4.pdf`](prints/cube_holbein_a4.pdf), is Holbein's self-portrait skewed into an L, with 4 mm of bleed past each edge. Fold it, look from about 18 cm with one eye, and it should straighten out. I printed and folded it, and the result looks pretty satisfactory by eye. The bleed gave useful wiggle room. The error hasn't been measured yet, and one fold can't show how well the board's bow repeats. The right face was also at least a third dimmer in the photo's light, so it needs even lighting.
 
 ## Next
 
