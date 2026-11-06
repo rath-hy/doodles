@@ -560,9 +560,10 @@ def predicted_view(photo, sheet, mapped, board):
     return np.clip(out, 0, 1)
 
 
-def save_print(sheet, path, board, dpi=300, page_mm=(210, 297), top_mm=10):
+def save_print(sheet, path, board, dpi=300, page_mm=(210, 297), top_mm=10, note=None):
     """An A4 PDF of the sheet at the board's size and position. The sheet stays clean inside a dark
-    cut line, and everything outside it is hatched, to throw away. Print at 100%."""
+    cut line, and everything outside it is hatched, to throw away. Print at 100%. note: extra lines
+    of text for the label."""
     from PIL import Image, ImageDraw, ImageFont
     px = lambda mm: round(mm / 25.4 * dpi)
     W, H = px(page_mm[0]), px(page_mm[1])
@@ -576,7 +577,9 @@ def save_print(sheet, path, board, dpi=300, page_mm=(210, 297), top_mm=10):
     page.paste(img, (x0, y0))
     draw.rectangle([x0 - 3, y0 - 3, x0 + R + 2, y0 + R + 2], outline=(0, 0, 0), width=3)
     bx, by = x0, y0 + R + px(10)              # the label and scale bar, on a white box in the waste
-    draw.rectangle([bx - px(3), by - px(4), bx + px(125), by + px(15)], fill="white", outline=(120, 120, 120))
+    extra = f"\n{note}" if note else ""
+    bottom = by + px(15 + 4.6 * extra.count("\n"))
+    draw.rectangle([bx - px(3), by - px(4), bx + px(125), bottom], fill="white", outline=(120, 120, 120))
     draw.line([bx, by, bx + px(100), by], fill=0, width=3)
     for x in (bx, bx + px(100)):
         draw.line([x, by - 12, x, by + 12], fill=0, width=3)
@@ -586,7 +589,7 @@ def save_print(sheet, path, board, dpi=300, page_mm=(210, 297), top_mm=10):
         font = None
     draw.text((bx, by + px(3)), f"This bar is 100 mm: print at 100%, not fit to page.\n"
                                 f"Cut along the black line. Keep the {board.sheet_mm:g} mm square, "
-                                f"throw away the hatched paper.", fill=0, font=font, spacing=px(1.5))
+                                f"throw away the hatched paper.{extra}", fill=0, font=font, spacing=px(1.5))
     page.save(path, resolution=dpi)
     return page
 
@@ -614,6 +617,345 @@ def plot_projection(photo, mapped, sheet, board):
         ax.axis("off")
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------------------------
+# Pictures across the faces of a cube
+#
+# A cube has an advantage over a free-form fold: its faces are known squares, so nothing has to be
+# marked by hand. Its visible faces are found from the markers alone, and their outline is the
+# canvas. Real paper bows, dents and rounds over at its edges, so each face gets a homography plus a
+# thin-plate spline, fitted to the markers and to the checker corners between them.
+
+
+def fit_warp(P, Q, smoothing=None, step_mm=0.25):
+    """A map from sheet points P (mm) to photo points Q (px): a homography, plus, unless smoothing is
+    None, a thin-plate spline through what the homography misses. A spline can follow a local dent,
+    and smoothing sets how closely it chases individual points. Beyond the outermost measured points
+    the correction stays frozen at its last value. It's stored on a fine grid, so applying it to
+    millions of pixels stays fast."""
+    H = _fit(P, Q, "homography")
+    warp = dict(H=H, grid=None)
+    if smoothing is not None:
+        from scipy.interpolate import RBFInterpolator
+        spline = RBFInterpolator(P, Q - _project(H, P), kernel="thin_plate_spline", smoothing=smoothing, degree=1)
+        lo, hi = P.min(0), P.max(0)
+        n = np.ceil((hi - lo) / step_mm).astype(int) + 1
+        xx, yy = np.meshgrid(np.linspace(lo[0], hi[0], n[0]), np.linspace(lo[1], hi[1], n[1]))
+        warp.update(lo=lo, hi=hi, grid=spline(np.c_[xx.ravel(), yy.ravel()]).reshape(n[1], n[0], 2))
+    return warp
+
+
+def apply_warp(warp, xy):
+    q = _project(warp["H"], xy)
+    if warp["grid"] is None:
+        return q
+    grid = warp["grid"]                 # bilinear lookup, with points clipped to the measured area
+    t = (np.clip(xy, warp["lo"], warp["hi"]) - warp["lo"]) / (warp["hi"] - warp["lo"]) * (np.array(grid.shape[1::-1]) - 1)
+    i = np.minimum(t.astype(int), np.array(grid.shape[1::-1]) - 2)
+    f = t - i
+    fx, fy = f[:, 0:1], f[:, 1:2]
+    return q + ((1 - fy) * ((1 - fx) * grid[i[:, 1], i[:, 0]] + fx * grid[i[:, 1], i[:, 0] + 1])
+                + fy * ((1 - fx) * grid[i[:, 1] + 1, i[:, 0]] + fx * grid[i[:, 1] + 1, i[:, 0] + 1]))
+
+
+def holdout_px(P, Q, smoothing, folds=10, seed=0):
+    """How well a warp predicts points it wasn't fitted to: rms and largest error in photo pixels,
+    over random folds."""
+    order = np.random.default_rng(seed).permutation(len(P))
+    errors = []
+    for f in range(folds):
+        test = order[f::folds]
+        train = np.setdiff1d(order, test)
+        errors.append(np.linalg.norm(apply_warp(fit_warp(P[train], Q[train], smoothing), P[test]) - Q[test], axis=1))
+    errors = np.concatenate(errors)
+    return float(np.sqrt((errors ** 2).mean())), float(errors.max())
+
+
+def rim_px(P, Q, box, smoothing, rim_mm=None):
+    """Harder than holdout_px: fit to the middle of a face and predict its rim. rms and largest error."""
+    x0, y0, side = box
+    rim_mm = side / 11 if rim_mm is None else rim_mm
+    near = np.minimum.reduce([P[:, 0] - x0, P[:, 1] - y0, x0 + side - P[:, 0], y0 + side - P[:, 1]]) < rim_mm
+    errors = np.linalg.norm(apply_warp(fit_warp(P[~near], Q[~near], smoothing), P[near]) - Q[near], axis=1)
+    return float(np.sqrt((errors ** 2).mean())), float(errors.max())
+
+
+def find_faces(markers, board, n=3, tol=0.8):
+    """The n visible flat faces, from the markers alone. A generous tol keeps a bowed face together
+    as one piece. Each face's markers are snapped outward to the board's squares, and the result has
+    to be square. Returns {"top" | "left" | "right": dict(box=(x0, y0, side), ids=[...])}, named by
+    where each face is in the photo."""
+    pieces = sorted(fit_pieces(markers, board, "homography", tol), key=lambda p: -len(p[1]))[:n]
+    if len(pieces) < n or len(pieces[-1][1]) < 8:
+        raise ValueError(f"expected {n} faces, found pieces of {[len(p[1]) for p in pieces]} markers")
+    s = board.square_mm
+    faces = []
+    for _, ids in pieces:
+        P = np.concatenate([board.corners[j] for j in ids])
+        lo, hi = np.floor(P.min(0) / s + 1e-6), np.ceil(P.max(0) / s - 1e-6)
+        if hi[0] - lo[0] != hi[1] - lo[1]:
+            raise ValueError(f"a face spans {hi - lo} squares, so it isn't square: is a face partly hidden?")
+        faces.append(dict(box=tuple(round(float(v), 6) for v in (lo[0] * s, lo[1] * s, (hi[0] - lo[0]) * s))))
+    for f in faces:                         # every marker inside the square, even if RANSAC set it aside
+        x0, y0, side = f["box"]
+        f["ids"] = [j for j in markers if j in board.corners and x0 < board.corners[j][:, 0].mean() < x0 + side
+                    and y0 < board.corners[j][:, 1].mean() < y0 + side]
+        P = np.concatenate([board.corners[j] for j in f["ids"]])
+        Q = np.concatenate([markers[j] for j in f["ids"]])
+        f["center"] = _project(_fit(P, Q, "homography"), np.array([[x0 + side / 2, y0 + side / 2]]))[0]
+    faces.sort(key=lambda f: f["center"][1])  # highest in the photo is the top; the other two by x
+    top, others = faces[0], sorted(faces[1:], key=lambda f: f["center"][0])
+    return dict(top=top, left=others[0], right=others[1])
+
+
+def checker_corners(photo, board, box, warp, reach_px=14):
+    """The checkerboard corners inside a face, located in the photo near where warp predicts them.
+    These need no readable code, so they cover markers the detector missed. Returns (sheet mm, photo
+    px, share found). Corners that moved more than reach_px are dropped as unreliable."""
+    x0, y0, side = box
+    s = board.square_mm
+    n = int(round(side / s))
+    xx, yy = np.meshgrid(x0 + s * np.arange(1, n), y0 + s * np.arange(1, n))
+    P = np.c_[xx.ravel(), yy.ravel()]
+    q = apply_warp(warp, P).astype(np.float32)
+    gray = (np.clip(photo.mean(-1), 0, 1) * 255).astype(np.uint8)
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.01)
+    found = cv2.cornerSubPix(gray, q.reshape(-1, 1, 2).copy(), (13, 13), (-1, -1), crit).reshape(-1, 2)
+    keep = np.linalg.norm(found - q, axis=1) < reach_px
+    return P[keep], found[keep].astype(float), float(keep.mean())
+
+
+def fit_faces(photo, markers, board, faces, smoothing=30, rounds=2):
+    """Adds to each face its measured points P (mm) and Q (px) and its warp. Markers first, then the
+    checker corners found with that fit, then a fit to both."""
+    for f in faces.values():
+        Pm = np.concatenate([board.corners[j] for j in f["ids"]])
+        Qm = np.concatenate([markers[j] for j in f["ids"]])
+        warp = fit_warp(Pm, Qm, 300)    # stiffer until the corners add data
+        for r in range(rounds):
+            Pc, Qc, share = checker_corners(photo, board, f["box"], warp, reach_px=14 - 3 * r)
+            f.update(P=np.r_[Pm, Pc], Q=np.r_[Qm, Qc], Pm=Pm, Qm=Qm, corners_found=share)
+            warp = fit_warp(f["P"], f["Q"], smoothing)
+        f["warp"] = warp
+    return faces
+
+
+def face_outline(face, samples=60):
+    """A face's square outline in the photo, as an (N, 2) array."""
+    x0, y0, side = face["box"]
+    t = np.linspace(0, side, samples, endpoint=False)
+    o = np.zeros_like(t)
+    square = np.r_[np.c_[x0 + t, y0 + o], np.c_[x0 + side + o, y0 + t],
+                   np.c_[x0 + side - t, y0 + side + o], np.c_[x0 + o, y0 + side - t]]
+    return apply_warp(face["warp"], square)
+
+
+def rectified_face(photo, face, px_mm=10):
+    """What a face looks like in the photo, flattened back to a square by its warp. Returns
+    (image, sheet points (n, n, 2) in mm)."""
+    x0, y0, side = face["box"]
+    n = int(round(side * px_mm))
+    u = (np.arange(n) + 0.5) / px_mm
+    xx, yy = np.meshgrid(x0 + u, y0 + u)
+    q = apply_warp(face["warp"], np.c_[xx.ravel(), yy.ravel()]).reshape(n, n, 2).astype(np.float32)
+    return cv2.remap(photo, q[..., 0], q[..., 1], cv2.INTER_LINEAR), np.stack([xx, yy], -1)
+
+
+def picture_frame(picture, faces, fit="cover"):
+    """Where the picture sits in the photo: upright and centered on the faces' bounding box. "cover"
+    scales it to fill the box. Returns (left, top, photo pixels per picture pixel)."""
+    all_points = np.concatenate([face_outline(f) for f in faces.values()])
+    lo, hi = all_points.min(0), all_points.max(0)
+    ph, pw = picture.shape[:2]
+    scale = (max if fit == "cover" else min)((hi[0] - lo[0]) / pw, (hi[1] - lo[1]) / ph)
+    center = (lo + hi) / 2
+    return center[0] - pw * scale / 2, center[1] - ph * scale / 2, scale
+
+
+def project_onto_faces(picture, faces, board, fit="cover", dpi=300, bleed_mm=4):
+    """The sheet to print: each point of a face's square, plus bleed_mm of the paper around it, gets
+    the picture's color at the place it lands in the photo. Past a face's edge, the paper goes around
+    a corner out of sight, and the bleed there covers small folding errors with color instead of
+    white. Returns (sheet (R, R, 3), printed (R, R), frame)."""
+    R = round(board.sheet_mm / 25.4 * dpi)
+    u = (np.arange(R) + 0.5) * board.sheet_mm / R
+    xx, yy = np.meshgrid(u, u)
+    names = list(faces)
+    dist = []
+    for name in names:
+        x0, y0, side = faces[name]["box"]
+        dx = np.maximum(np.maximum(x0 - xx, xx - x0 - side), 0)
+        dy = np.maximum(np.maximum(y0 - yy, yy - y0 - side), 0)
+        dist.append(np.hypot(dx, dy))
+    dist = np.stack(dist)
+    label = dist.argmin(0)
+    label[dist.min(0) > bleed_mm] = -1
+    left, top, scale = picture_frame(picture, faces, fit)
+    mx, my = np.full((R, R), -1, np.float32), np.full((R, R), -1, np.float32)
+    for k, name in enumerate(names):
+        rows, cols = np.nonzero(label == k)
+        q = apply_warp(faces[name]["warp"], np.c_[xx[rows, cols], yy[rows, cols]])
+        mx[rows, cols] = (q[:, 0] - left) / scale - 0.5
+        my[rows, cols] = (q[:, 1] - top) / scale - 0.5
+    colors = cv2.remap(picture.astype(np.float32), mx, my, cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    sheet = np.ones((R, R, 3), np.float32)
+    printed = label >= 0
+    sheet[printed] = np.clip(colors[printed], 0, 1)
+    return sheet, printed, (left, top, scale)
+
+
+def add_fold_ticks(sheet, faces, board, length_mm=3, shade=0.55):
+    """Short gray ticks on the sheet's rim, where the faces' edge lines would reach it, as a guide
+    for folding. The rim isn't on any of the three visible faces."""
+    out = sheet.copy()
+    s = out.shape[0] / board.sheet_mm
+    n = round(length_mm * s)
+    xs, ys = set(), set()
+    for f in faces.values():
+        x0, y0, side = f["box"]
+        xs |= {x0, x0 + side}
+        ys |= {y0, y0 + side}
+    for x in xs:
+        c = round(x * s)
+        out[:n, c - 1:c + 2] = shade
+        out[-n:, c - 1:c + 2] = shade
+    for y in ys:
+        c = round(y * s)
+        out[c - 1:c + 2, :n] = shade
+        out[c - 1:c + 2, -n:] = shade
+    return out
+
+
+def white_levels(photo, faces, percentile=92):
+    """How bright white paper is on each face, from the photo. Ink can only darken paper, so these
+    differences show in the result as a different shade on each face."""
+    return {name: float(np.percentile(rectified_face(photo, f, px_mm=8)[0].mean(-1), percentile))
+            for name, f in faces.items()}
+
+
+def faces_view(photo, sheet, faces, board, shade=True):
+    """The photo with the cube repainted from the printed sheet, folded by the measured maps: the
+    predicted view from the camera. Pixels in the narrow grooves between faces go to the nearest
+    face. shade: keep each face's measured brightness, as real paper would. Returns (view, cube mask)."""
+    names = list(faces)
+    H, W = photo.shape[:2]
+    outlines = {n: face_outline(faces[n]).astype(np.int32) for n in names}
+    label = np.full((H, W), -1, np.int32)
+    for k, n in enumerate(names):
+        mask = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(mask, [outlines[n]], 1)
+        label[(mask > 0) & (label < 0)] = k
+    hull = np.zeros((H, W), np.uint8)
+    cv2.fillConvexPoly(hull, cv2.convexHull(np.concatenate(list(outlines.values()))), 1)
+    hull = cv2.dilate(hull, np.ones((17, 17), np.uint8))     # the rounded edges pass the ideal outline a little
+    missing = (hull > 0) & (label < 0)
+    if missing.any():
+        _, nearest = cv2.distanceTransformWithLabels((label < 0).astype(np.uint8), cv2.DIST_L2, 5,
+                                                     labelType=cv2.DIST_LABEL_PIXEL)
+        values = np.zeros(nearest.max() + 1, label.dtype)
+        values[nearest[label >= 0]] = label[label >= 0]
+        label[missing] = values[nearest[missing]]
+    out = photo.copy()
+    levels = white_levels(photo, faces) if shade else {n: 1.0 for n in names}
+    s = sheet.shape[0] / board.sheet_mm
+    for k, n in enumerate(names):
+        rows, cols = np.nonzero(label == k)
+        p = np.c_[cols, rows].astype(float)
+        warp = faces[n]["warp"]
+        Hi = np.linalg.inv(warp["H"])
+        target = _project(Hi, p)
+        xy = target.copy()
+        for _ in range(6):              # undo the correction by fixed-point iteration
+            xy = xy + target - _project(Hi, apply_warp(warp, xy))
+        mx, my = np.full((H, W), -10, np.float32), np.full((H, W), -10, np.float32)
+        mx[rows, cols], my[rows, cols] = xy[:, 0] * s - 0.5, xy[:, 1] * s - 0.5
+        painted = cv2.remap(sheet, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(1, 1, 1))
+        out[rows, cols] = painted[rows, cols] * levels[n]
+    return np.clip(out, 0, 1), hull > 0
+
+
+def _cube_points(faces):
+    # Each face's sheet -> 3D map. The corner the three faces share is the origin; the cube lies in
+    # the negative octant, with z up. Needs the top face to share a sheet edge with left and right.
+    top, left, right = faces["top"]["box"], faces["left"]["box"], faces["right"]["box"]
+    corners = lambda b: {(b[0], b[1]), (b[0] + b[2], b[1]), (b[0], b[1] + b[2]), (b[0] + b[2], b[1] + b[2])}
+    shared = corners(top) & corners(left) & corners(right)
+    if len(shared) != 1:
+        raise ValueError("the three faces don't meet at one point of the sheet")
+    c = np.array(shared.pop(), float)
+    center = lambda b: np.array([b[0] + b[2] / 2, b[1] + b[2] / 2]) - c
+    ax, ay = np.array([np.sign(center(top)[0]), 0.0]), np.array([0.0, np.sign(center(top)[1])])
+    # The top's edge shared with left runs along the axis where both lie on the same side.
+    to_left, to_right = (ax, ay) if center(left) @ ax > 0 else (ay, ax)
+    other = lambda v, along: np.sign(v - (v @ along) * along)   # a face's edge that isn't shared with the top
+    A, B, D = np.array([0, -1.0, 0]), np.array([-1.0, 0, 0]), np.array([0, 0, -1.0])
+    maps = dict(top=(to_left, A, to_right, B), left=(to_left, A, other(center(left), to_left), D),
+                right=(to_right, B, other(center(right), to_right), D))
+    return c, top[2], maps
+
+
+def cube_camera(faces, focal_35mm, shape):
+    """Where the camera was, from the measured points and an ideal rigid cube. focal_35mm: the lens's
+    35 mm equivalent focal length, from the photo's EXIF. Returns a dict with K, position (mm from
+    the shared corner, z up, cube below and behind it), distance, height above the cube's base, rms
+    (px, what the ideal cube misses of the real paper), and tilt: each face's angle away from the line
+    of sight."""
+    c, side, maps = _cube_points(faces)
+    H, W = shape[:2]
+    f = focal_35mm / np.hypot(36, 24) * np.hypot(W, H)
+    K = np.array([[f, 0, W / 2], [0, f, H / 2], [0, 0, 1.0]])
+    obj, img = [], []
+    for name, face in faces.items():
+        a, A, b, B = maps[name]
+        d = face["P"] - c
+        obj.append((d @ a)[:, None] * A + (d @ b)[:, None] * B)
+        img.append(face["Q"])
+    obj, img = np.concatenate(obj).astype(np.float32), np.concatenate(img).astype(np.float32)
+    _, rvec, tvec = cv2.solvePnP(obj, img, K, None)
+    q = cv2.projectPoints(obj, rvec, tvec, K, None)[0][:, 0]
+    R_, _ = cv2.Rodrigues(rvec)
+    position = (-R_.T @ tvec).ravel()
+    d = position / np.linalg.norm(position)
+    normals = dict(top=[0, 0, 1.0], left=[1.0, 0, 0], right=[0, 1.0, 0])
+    return dict(K=K, position=position, distance=float(np.linalg.norm(position)),
+                height=float(position[2] + side), rms=float(np.sqrt(((q - img) ** 2).sum(1).mean())),
+                tilt={n: float(np.degrees(np.arccos(np.dot(v, d)))) for n, v in normals.items()})
+
+
+def render_cube(sheet, faces, board, position, K, size=700, zoom=1.0, background=0.82):
+    """The folded print as a perfect cube, seen by a pinhole camera at position, aimed at the cube's
+    center. It uses none of the photo's bowing, so it's a second opinion on the sheet, and it can show
+    the view from places the photo wasn't taken."""
+    position = np.asarray(position, float)
+    c, side, maps = _cube_points(faces)
+    target = np.full(3, -side / 2.0)
+    forward = (target - position) / np.linalg.norm(target - position)
+    right = np.cross(forward, [0, 0, 1.0])
+    right /= np.linalg.norm(right)
+    down = np.cross(forward, right)
+    R_ = np.stack([right, down, forward])
+    t = -R_ @ position
+    f = K[0, 0] * size / (2 * K[0, 2]) * zoom
+    Kv = np.array([[f, 0, size / 2], [0, f, size / 2], [0, 0, 1.0]])
+    out = np.full((size, size, 3), background, np.float32)
+    s = sheet.shape[0] / board.sheet_mm
+    normals = dict(top=[0, 0, 1.0], left=[1.0, 0, 0], right=[0, 1.0, 0])
+    for name, face in faces.items():
+        if np.dot(normals[name], position) <= 0:
+            continue                    # facing away from this camera
+        x0, y0, sd = face["box"]
+        sq = np.array([[x0, y0], [x0 + sd, y0], [x0 + sd, y0 + sd], [x0, y0 + sd]])
+        a, A, b, B = maps[name]
+        pts3 = ((sq - c) @ a)[:, None] * A + ((sq - c) @ b)[:, None] * B
+        px = (Kv @ ((R_ @ pts3.T).T + t).T).T
+        px = px[:, :2] / px[:, 2:]
+        H = cv2.getPerspectiveTransform((sq * s - 0.5).astype(np.float32), px.astype(np.float32))
+        layer = cv2.warpPerspective(sheet, H, (size, size), flags=cv2.INTER_LINEAR)
+        mask = np.zeros((size, size), np.uint8)
+        cv2.fillConvexPoly(mask, px.astype(np.int32), 1)
+        out[mask > 0] = layer[mask > 0]
+    return out
 
 
 # ---------------------------------------------------------------------------------------------

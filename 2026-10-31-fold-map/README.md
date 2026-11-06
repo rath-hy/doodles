@@ -112,6 +112,12 @@ The Ambassadors idea, with a first real photo: I folded the board into a sanbo (
 
 On the real photo, 149 markers were found, about 60 pixels per side. The floor is one rigid piece, fitted to about 0.15 mm, and 88% of the marked area matched directly. The rest (glare, and paper curving up into the walls) borrows the floor's transform. The photo is taken from straight above a flat floor, so the picture lands undistorted in the middle of the sheet: this tests the pipeline, and isn't anamorphic yet. That needs an angled view, or an area spanning several facets. On simulated photos with a known camera tilt, bases with big pieces stay within 0.5 mm up to 60°. The crane loses about 10% of a marked area to slivers up to 45°, and 43% at 60°. The print itself hasn't been folded yet.
 
+## A portrait across three faces of a cube
+
+The first real anamorphosis: [`cube_anamorphosis.ipynb`](cube_anamorphosis.ipynb) traces it step by step. I folded the board into Kunihiko Kasahara's seamless cube and photographed one corner. No marking this time, because the three visible faces are the canvas. They turn out to be three 50 mm squares of the sheet that meet at its center, so the middle of the sheet becomes the corner facing the camera.
+
+Real faces aren't flat. A flat fit per face misses by 7 to 13 pixels, so each face gets a homography plus a thin-plate spline fitted to its markers and the checker corners between them, which brings points it wasn't fitted to down to about 0.1 to 0.3 mm. The output, [`prints/cube_holbein_a4.pdf`](prints/cube_holbein_a4.pdf), is Holbein's self-portrait skewed into an L, with 4 mm of bleed past each edge. Fold it, look from about 18 cm with one eye, and it should straighten out. That's still a prediction: it hasn't been folded, and the board's bow may not repeat. The right face was also at least a third dimmer in the photo's light, so it needs even lighting.
+
 ## Next
 
 - Splice an image onto the visible regions using `fold_map.npz`.
